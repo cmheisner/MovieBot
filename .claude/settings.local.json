@@ -1,7 +1,11 @@
 {
   "permissions": {
     "allow": [
-      "Bash(python3:*)"
+      "Bash(python3:*)",
+      "Bash(sqlite3 /home/deck/Documents/GitHub/MovieBot/data/moviebot.db .schema)",
+      "Bash(sqlite3 /home/deck/Documents/GitHub/MovieBot/data/moviebot.db \"SELECT COUNT\\(*\\) as movie_count FROM movies; SELECT COUNT\\(*\\) as poll_count FROM polls; SELECT COUNT\\(*\\) as schedule_count FROM schedule_entries;\")",
+      "Bash(sqlite3 /home/deck/Documents/GitHub/MovieBot/data/moviebot.db \"SELECT id, title, year, status, notes FROM movies LIMIT 5;\")",
+      "Bash(sqlite3 /home/deck/Documents/GitHub/MovieBot/data/moviebot.db \"PRAGMA table_info\\(movies\\);\")"
     ]
   }
 }

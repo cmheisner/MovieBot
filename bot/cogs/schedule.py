@@ -1,11 +1,14 @@
 from __future__ import annotations
 import logging
-from datetime import datetime, timezone
+import zoneinfo
+from datetime import datetime, timezone as dt_timezone
 
 import discord
 from discord import app_commands
 from discord.ext import commands
 
+from bot.constants import TZ_EASTERN, MOVIE_NIGHT_HOUR, MOVIE_NIGHT_MINUTE
+from bot.cogs.user import COMMON_TIMEZONES
 from bot.models.movie import MovieStatus
 from bot.utils.embeds import schedule_embed
 from bot.utils.movie_lookup import resolve_movie
@@ -62,31 +65,61 @@ class ScheduleCog(commands.Cog, name="Schedule"):
     @app_commands.command(name="schedule-add", description="Manually schedule a movie (bypasses poll).")
     @app_commands.describe(
         title="Movie title",
-        year="Release year (optional)",
         date="Date in YYYY-MM-DD format (defaults to next movie night)",
+        time="Time in HH:MM format in your timezone (defaults to 22:30)",
+        timezone="Your timezone — saved for future use (e.g. America/Los_Angeles)",
     )
     async def schedule_add(
         self,
         interaction: discord.Interaction,
         title: str,
-        year: int | None = None,
         date: str | None = None,
+        time: str | None = None,
+        timezone: str | None = None,
     ):
         await interaction.response.defer()
 
-        movie = await resolve_movie(self.bot.storage, interaction, title, year)
+        movie = await resolve_movie(self.bot.storage, interaction, title, None)
         if not movie:
             return
 
+        if time and not date:
+            await interaction.followup.send("⚠️ Please provide a `date` when specifying a `time`.", ephemeral=True)
+            return
+
+        # If a timezone was passed inline, validate and save it
+        if timezone:
+            try:
+                zoneinfo.ZoneInfo(timezone)
+            except (zoneinfo.ZoneInfoNotFoundError, KeyError):
+                await interaction.followup.send(f"⚠️ **{timezone}** is not a valid timezone.", ephemeral=True)
+                return
+            await self.bot.storage.set_user_timezone(str(interaction.user.id), timezone)
+            tz_name = timezone
+        else:
+            tz_name = await self.bot.storage.get_user_timezone(str(interaction.user.id))
+
+        user_tz = zoneinfo.ZoneInfo(tz_name) if tz_name else TZ_EASTERN
+
         if date:
             try:
-                naive = datetime.strptime(date, "%Y-%m-%d")
-                scheduled_for = naive.replace(
-                    hour=2, minute=30, tzinfo=timezone.utc  # 10:30 PM EST = 02:30 UTC next day
-                )
+                naive_date = datetime.strptime(date, "%Y-%m-%d")
             except ValueError:
                 await interaction.followup.send("⚠️ Invalid date format. Use YYYY-MM-DD.", ephemeral=True)
                 return
+
+            if time:
+                try:
+                    parsed_time = datetime.strptime(time, "%H:%M")
+                except ValueError:
+                    await interaction.followup.send("⚠️ Invalid time format. Use HH:MM (e.g. 22:30).", ephemeral=True)
+                    return
+                hour, minute = parsed_time.hour, parsed_time.minute
+            else:
+                hour, minute = MOVIE_NIGHT_HOUR, MOVIE_NIGHT_MINUTE
+
+            naive = naive_date.replace(hour=hour, minute=minute, second=0, microsecond=0)
+            scheduled_for = naive.replace(tzinfo=user_tz).astimezone(dt_timezone.utc)
         else:
             scheduled_for = next_movie_night()
 
@@ -100,11 +133,31 @@ class ScheduleCog(commands.Cog, name="Schedule"):
             return
 
         await self.bot.storage.update_movie(movie.id, status=MovieStatus.SCHEDULED)
-        date_str = format_dt_eastern(scheduled_for)
-        await interaction.followup.send(
-            f"✅ **{movie.display_title}** scheduled for **{date_str}** (entry id={entry.id}).\n"
-            f"Run `/event-create` to create the Discord event."
-        )
+        eastern_str = format_dt_eastern(scheduled_for)
+        msg = f"✅ **{movie.display_title}** scheduled for **{eastern_str}** (entry id={entry.id})."
+        if tz_name and user_tz is not TZ_EASTERN:
+            local_str = scheduled_for.astimezone(user_tz).strftime("%-I:%M %p %Z")
+            msg += f"\n-# Your local time: {local_str}"
+        msg += "\nRun `/event-create` to create the Discord event."
+        await interaction.followup.send(msg)
+
+        if not tz_name and time:
+            await interaction.followup.send(
+                "💡 Time was interpreted as **Eastern** since you haven't set a timezone yet. "
+                "Add `timezone:` to this command or use `/set-timezone` to save your preference for next time.",
+                ephemeral=True,
+            )
+
+    @schedule_add.autocomplete("timezone")
+    async def timezone_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> list[app_commands.Choice[str]]:
+        current_lower = current.lower()
+        choices = []
+        for label, tz in COMMON_TIMEZONES:
+            if current_lower in label.lower() or current_lower in tz.lower():
+                choices.append(app_commands.Choice(name=f"{label} — {tz}", value=tz))
+        return choices[:25]
 
     # ── /schedule-remove ─────────────────────────────────────────────────
 

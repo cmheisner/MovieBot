@@ -15,6 +15,7 @@ COGS = [
     "bot.cogs.poll",
     "bot.cogs.schedule",
     "bot.cogs.events",
+    "bot.cogs.user",
 ]
 
 

@@ -12,35 +12,39 @@ A Discord bot for managing movie nights — from suggestions to scheduling to ev
 ## Commands
 
 ### Stash
-| Command | Description |
-|---|---|
-| `/stash-add` | Add a movie to the stash |
-| `/stash-list` | Browse the stash (filter by status) |
-| `/stash-info` | View full details for a movie |
-| `/stash-edit` | Update notes, Apple TV URL, or image |
-| `/stash-remove` | Remove a movie from the stash |
-| `/stash-watched` | Mark a movie as watched |
+
+| Command | Parameters | Description |
+|---|---|---|
+| `/stash-add` | `title` *(required)*, `year`, `notes`, `apple_tv_url`, `image_url` | Add a movie to the stash. Searches OMDB for metadata; if multiple matches are found, prompts you to pick the right one. Posts a confirmation to the stash channel. |
+| `/stash-list` | `status` *(default: Stash)* | List movies filtered by status. Choices: **Stash** (candidates), **Nominated** (in a poll), **Scheduled**, **Watched**, **All**. |
+| `/stash-info` | `title` *(required)*, `year` | Show a detailed card for a movie — title, year, OMDB data, poster, and any notes. |
+| `/stash-edit` | `title` *(required)*, `year`, `notes`, `apple_tv_url`, `image_url` | Edit a movie's notes, Apple TV URL, or image. Only the user who added the movie (or an admin) can edit it. |
+| `/stash-remove` | `title` *(required)*, `year` | Remove a movie from the stash (marks it as skipped). Only the original adder or an admin can remove it. |
+| `/stash-watched` | `title` *(required)*, `year` | Mark a movie as watched and update its status. |
 
 ### Voting
-| Command | Description |
-|---|---|
-| `/poll-create` | Start a vote from selected stash movies |
-| `/poll-status` | See live vote tallies |
-| `/poll-close` | Close voting and schedule the winner |
+
+| Command | Parameters | Description |
+|---|---|---|
+| `/poll-create` | `movie_ids` *(required, comma-separated)*, `duration_hours` *(default: 24)* | Start a reaction-based poll in the general channel from stash movie IDs. Nominated movies move to **Nominated** status; the poll auto-closes after the specified duration. |
+| `/poll-status` | `poll_id` *(optional, defaults to active poll)* | Show live vote tallies for the current or specified poll. |
+| `/poll-close` | `poll_id` *(optional, defaults to active poll)* | Close voting, tally reactions, and schedule the winner. Ties are broken by earliest addition date. The winner moves to **Scheduled**; all other nominees return to **Stash**. |
 
 ### Schedule
-| Command | Description |
-|---|---|
-| `/schedule-list` | View upcoming scheduled movies |
-| `/schedule-history` | View full schedule history |
-| `/schedule-add` | Manually add a movie to the schedule |
-| `/schedule-remove` | Remove a schedule entry |
+
+| Command | Parameters | Description |
+|---|---|---|
+| `/schedule-list` | `limit` *(default: 5)* | Show upcoming scheduled movies with their dates. |
+| `/schedule-history` | `limit` *(default: 10)* | Show the full schedule — both past and upcoming entries. |
+| `/schedule-add` | `title` *(required)*, `year`, `date` *(YYYY-MM-DD)* | Manually schedule a movie, bypassing a poll. Defaults to the next movie night (Wednesday or Thursday at 10:30 PM Eastern) if no date is given. Returns a schedule ID for event creation. |
+| `/schedule-remove` | `schedule_id` *(required)* | Remove a schedule entry. Deletes any linked Discord event and returns the movie to **Stash** status. |
 
 ### Events
-| Command | Description |
-|---|---|
-| `/event-create` | Create a Discord event for the next scheduled movie |
-| `/event-delete` | Remove a Discord event (can be re-created) |
+
+| Command | Parameters | Description |
+|---|---|---|
+| `/event-create` | `schedule_id` *(optional, defaults to next scheduled movie)* | Create a Discord Scheduled Event for a movie. Pulls artwork from Apple TV or the OMDB poster. The event description includes plot, rating, genre, Apple TV link, and notes. Safe to re-run — won't create duplicates. |
+| `/event-delete` | `schedule_id` *(required)* | Delete the Discord event for a schedule entry. The event can be re-created later with `/event-create`. |
 
 ## Setup
 

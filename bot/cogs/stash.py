@@ -25,13 +25,15 @@ class MovieSelectView(discord.ui.View):
     """Shown when OMDB returns multiple search results and the user must pick one."""
 
     def __init__(self, results: list[dict], *, bot, interaction: discord.Interaction,
-                 notes: Optional[str], apple_tv_url: Optional[str], image_url: Optional[str]):
+                 notes: Optional[str], apple_tv_url: Optional[str], image_url: Optional[str],
+                 group_name: Optional[str] = None):
         super().__init__(timeout=60)
         self.bot = bot
         self.original_interaction = interaction
         self.notes = notes
         self.apple_tv_url = apple_tv_url
         self.image_url = image_url
+        self.group_name = group_name
 
         options = [
             discord.SelectOption(
@@ -66,6 +68,7 @@ class MovieSelectView(discord.ui.View):
                 apple_tv_url=self.apple_tv_url,
                 image_url=self.image_url,
                 omdb_data=omdb_data,
+                group_name=self.group_name,
             )
         except ValueError as e:
             await interaction.followup.send(f"⚠️ {e}", ephemeral=True)
@@ -99,6 +102,7 @@ class StashCog(commands.Cog, name="Stash"):
         notes="Optional notes or comments",
         apple_tv_url="Apple TV URL for this movie",
         image_url="Custom image/poster URL",
+        group="Group label (e.g. 'This Spring - 2026')",
     )
     async def stash_add(
         self,
@@ -108,6 +112,7 @@ class StashCog(commands.Cog, name="Stash"):
         notes: str | None = None,
         apple_tv_url: str | None = None,
         image_url: str | None = None,
+        group: str | None = None,
     ):
         await interaction.response.defer(ephemeral=True)
 
@@ -128,6 +133,7 @@ class StashCog(commands.Cog, name="Stash"):
                 view = MovieSelectView(
                     results, bot=self.bot, interaction=interaction,
                     notes=notes, apple_tv_url=apple_tv_url, image_url=image_url,
+                    group_name=group,
                 )
                 await interaction.followup.send(
                     f"Found **{len(results)}** results for **{title}** — which one?",
@@ -148,6 +154,7 @@ class StashCog(commands.Cog, name="Stash"):
                 apple_tv_url=apple_tv_url,
                 image_url=image_url,
                 omdb_data=omdb_data,
+                group_name=group,
             )
         except ValueError as e:
             await interaction.followup.send(f"⚠️ {e}", ephemeral=True)
@@ -162,15 +169,21 @@ class StashCog(commands.Cog, name="Stash"):
     # ── /stash-list ──────────────────────────────────────────────────────
 
     @app_commands.command(name="stash-list", description="List movies in the stash.")
-    @app_commands.describe(status="Filter by status (default: stash)")
+    @app_commands.describe(
+        status="Filter by status (default: stash)",
+        group="Filter by group label",
+    )
     @app_commands.choices(status=STATUS_CHOICES)
     async def stash_list(
         self,
         interaction: discord.Interaction,
         status: str = "stash",
+        group: str | None = None,
     ):
         await interaction.response.defer()
         movies = await self.bot.storage.list_movies(status=status)
+        if group is not None:
+            movies = [m for m in movies if m.group_name == group]
         embed = stash_list_embed(movies, status_label=status)
         await interaction.followup.send(embed=embed)
 
@@ -199,6 +212,7 @@ class StashCog(commands.Cog, name="Stash"):
         notes="New notes",
         apple_tv_url="New Apple TV URL",
         image_url="New image URL",
+        group="New group label (e.g. 'This Spring - 2026')",
     )
     async def stash_edit(
         self,
@@ -208,6 +222,7 @@ class StashCog(commands.Cog, name="Stash"):
         notes: str | None = None,
         apple_tv_url: str | None = None,
         image_url: str | None = None,
+        group: str | None = None,
     ):
         await interaction.response.defer(ephemeral=True)
         movie = await resolve_movie(self.bot.storage, interaction, title, year)
@@ -227,6 +242,8 @@ class StashCog(commands.Cog, name="Stash"):
             updates["apple_tv_url"] = apple_tv_url
         if image_url is not None:
             updates["image_url"] = image_url
+        if group is not None:
+            updates["group_name"] = group
 
         if not updates:
             await interaction.followup.send("Nothing to update.", ephemeral=True)

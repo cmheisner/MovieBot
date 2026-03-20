@@ -43,6 +43,13 @@ def movie_card(movie: Movie, *, title_prefix: str = "") -> discord.Embed:
     return embed
 
 
+def _movie_line(m: Movie) -> str:
+    line = f"`{m.id}` **{m.display_title}**"
+    if m.notes:
+        line += f" — _{m.notes}_"
+    return line
+
+
 def stash_list_embed(movies: list[Movie], status_label: str = "stash") -> discord.Embed:
     embed = discord.Embed(
         title=f"🎬 Movie Stash — {status_label.capitalize()}",
@@ -52,13 +59,29 @@ def stash_list_embed(movies: list[Movie], status_label: str = "stash") -> discor
         embed.description = "_No movies found._"
         return embed
 
-    lines = []
-    for m in movies:
-        line = f"`{m.id}` **{m.display_title}**"
-        if m.notes:
-            line += f" — _{m.notes}_"
-        lines.append(line)
-    embed.description = "\n".join(lines)
+    has_groups = any(m.group_name for m in movies)
+
+    if has_groups:
+        # Preserve group order by first-seen insertion order
+        seen: dict[str, list[Movie]] = {}
+        ungrouped: list[Movie] = []
+        for m in movies:
+            if m.group_name:
+                seen.setdefault(m.group_name, []).append(m)
+            else:
+                ungrouped.append(m)
+
+        sections: list[str] = []
+        for group_name, group_movies in seen.items():
+            block = [f"**{group_name}**"] + [_movie_line(m) for m in group_movies]
+            sections.append("\n".join(block))
+        if ungrouped:
+            block = ["**Ungrouped**"] + [_movie_line(m) for m in ungrouped]
+            sections.append("\n".join(block))
+        embed.description = "\n\n".join(sections)
+    else:
+        embed.description = "\n".join(_movie_line(m) for m in movies)
+
     embed.set_footer(text=f"{len(movies)} movie(s) · Use /stash-info <title> <year> for details")
     return embed
 

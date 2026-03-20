@@ -28,6 +28,7 @@ CREATE TABLE IF NOT EXISTS movies (
     added_at     TEXT    NOT NULL,
     status       TEXT    NOT NULL DEFAULT 'stash',
     omdb_data    TEXT,
+    group_name   TEXT,
     UNIQUE (title, year)
 );
 
@@ -62,6 +63,11 @@ CREATE TABLE IF NOT EXISTS schedule_entries (
     UNIQUE (movie_id)
 );
 
+CREATE TABLE IF NOT EXISTS user_timezones (
+    user_id  TEXT PRIMARY KEY,
+    tz_name  TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_movies_status  ON movies (status);
 CREATE INDEX IF NOT EXISTS idx_polls_status   ON polls (status);
 CREATE INDEX IF NOT EXISTS idx_schedule_date  ON schedule_entries (scheduled_for);
@@ -92,6 +98,7 @@ def _row_to_movie(row: aiosqlite.Row) -> Movie:
         apple_tv_url=row["apple_tv_url"],
         image_url=row["image_url"],
         omdb_data=omdb,
+        group_name=row["group_name"],
     )
 
 
@@ -132,6 +139,12 @@ class SQLiteStorageProvider(StorageProvider):
         self._db.row_factory = aiosqlite.Row
         await self._db.executescript(SCHEMA)
         await self._db.commit()
+        # Migration: add group_name column if it doesn't exist yet
+        try:
+            await self._db.execute("ALTER TABLE movies ADD COLUMN group_name TEXT")
+            await self._db.commit()
+        except aiosqlite.OperationalError:
+            pass  # Column already exists
 
     async def close(self) -> None:
         if self._db:
@@ -149,6 +162,7 @@ class SQLiteStorageProvider(StorageProvider):
         apple_tv_url=None,
         image_url=None,
         omdb_data=None,
+        group_name=None,
     ) -> Movie:
         existing = await self.get_movie_by_title_year(title, year)
         if existing:
@@ -159,10 +173,10 @@ class SQLiteStorageProvider(StorageProvider):
         async with self._db.execute(
             """
             INSERT INTO movies (title, year, notes, apple_tv_url, image_url,
-                                added_by, added_by_id, added_at, status, omdb_data)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'stash', ?)
+                                added_by, added_by_id, added_at, status, omdb_data, group_name)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'stash', ?, ?)
             """,
-            (title, year, notes, apple_tv_url, image_url, added_by, added_by_id, now, omdb_json),
+            (title, year, notes, apple_tv_url, image_url, added_by, added_by_id, now, omdb_json, group_name),
         ) as cur:
             movie_id = cur.lastrowid
         await self._db.commit()
@@ -202,7 +216,7 @@ class SQLiteStorageProvider(StorageProvider):
         return [_row_to_movie(r) for r in rows]
 
     async def update_movie(self, movie_id: int, **fields) -> Movie:
-        allowed = {"title", "year", "notes", "apple_tv_url", "image_url", "status", "omdb_data"}
+        allowed = {"title", "year", "notes", "apple_tv_url", "image_url", "status", "omdb_data", "group_name"}
         update_fields = {k: v for k, v in fields.items() if k in allowed}
         if "omdb_data" in update_fields and isinstance(update_fields["omdb_data"], dict):
             update_fields["omdb_data"] = json.dumps(update_fields["omdb_data"])
@@ -348,3 +362,19 @@ class SQLiteStorageProvider(StorageProvider):
     async def delete_schedule_entry(self, entry_id: int) -> None:
         await self._db.execute("DELETE FROM schedule_entries WHERE id = ?", (entry_id,))
         await self._db.commit()
+
+    # ── User Preferences ─────────────────────────────────────────────────
+
+    async def set_user_timezone(self, user_id: str, tz_name: str) -> None:
+        await self._db.execute(
+            "INSERT OR REPLACE INTO user_timezones (user_id, tz_name) VALUES (?, ?)",
+            (user_id, tz_name),
+        )
+        await self._db.commit()
+
+    async def get_user_timezone(self, user_id: str) -> Optional[str]:
+        async with self._db.execute(
+            "SELECT tz_name FROM user_timezones WHERE user_id = ?", (user_id,)
+        ) as cur:
+            row = await cur.fetchone()
+        return row["tz_name"] if row else None

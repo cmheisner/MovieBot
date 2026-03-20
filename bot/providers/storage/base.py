@@ -27,6 +27,7 @@ class StorageProvider(ABC):
         apple_tv_url: Optional[str] = None,
         image_url: Optional[str] = None,
         omdb_data: Optional[dict] = None,
+        group_name: Optional[str] = None,
     ) -> Movie:
         """Insert a new movie; raises ValueError on duplicate (title, year)."""
 
@@ -102,4 +103,14 @@ class StorageProvider(ABC):
 
     @abstractmethod
     async def delete_schedule_entry(self, entry_id: int) -> None:
+        pass
+
+    # ── User Preferences ─────────────────────────────────────────────────
+
+    @abstractmethod
+    async def set_user_timezone(self, user_id: str, tz_name: str) -> None:
+        pass
+
+    @abstractmethod
+    async def get_user_timezone(self, user_id: str) -> Optional[str]:
         pass
