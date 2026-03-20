@@ -21,8 +21,6 @@ COGS = [
 class MovieBotClient(commands.Bot):
     def __init__(self, config: BotConfig) -> None:
         intents = discord.Intents.default()
-        intents.message_content = True
-        intents.reactions = True
         intents.guild_scheduled_events = True
 
         super().__init__(

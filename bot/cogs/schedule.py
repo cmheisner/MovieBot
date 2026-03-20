@@ -8,6 +8,7 @@ from discord.ext import commands
 
 from bot.models.movie import MovieStatus
 from bot.utils.embeds import schedule_embed
+from bot.utils.movie_lookup import resolve_movie
 from bot.utils.time_utils import next_movie_night, format_dt_eastern
 
 log = logging.getLogger(__name__)
@@ -61,21 +62,20 @@ class ScheduleCog(commands.Cog, name="Schedule"):
     @app_commands.command(name="schedule-add", description="Manually schedule a movie (bypasses poll).")
     @app_commands.describe(
         title="Movie title",
-        year="Release year",
+        year="Release year (optional)",
         date="Date in YYYY-MM-DD format (defaults to next movie night)",
     )
     async def schedule_add(
         self,
         interaction: discord.Interaction,
         title: str,
-        year: int,
+        year: int | None = None,
         date: str | None = None,
     ):
         await interaction.response.defer()
 
-        movie = await self.bot.storage.get_movie_by_title_year(title, year)
+        movie = await resolve_movie(self.bot.storage, interaction, title, year)
         if not movie:
-            await interaction.followup.send(f"⚠️ **{title} ({year})** not found in the stash. Add it first with `/stash-add`.", ephemeral=True)
             return
 
         if date:

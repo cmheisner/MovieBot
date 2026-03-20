@@ -173,6 +173,14 @@ class SQLiteStorageProvider(StorageProvider):
             row = await cur.fetchone()
         return _row_to_movie(row) if row else None
 
+    async def get_movies_by_title(self, title: str) -> list[Movie]:
+        async with self._db.execute(
+            "SELECT * FROM movies WHERE LOWER(title) = LOWER(?) AND status != 'skipped' ORDER BY year DESC",
+            (title,),
+        ) as cur:
+            rows = await cur.fetchall()
+        return [_row_to_movie(r) for r in rows]
+
     async def get_movie_by_title_year(self, title: str, year: int) -> Optional[Movie]:
         async with self._db.execute(
             "SELECT * FROM movies WHERE LOWER(title) = LOWER(?) AND year = ?", (title, year)

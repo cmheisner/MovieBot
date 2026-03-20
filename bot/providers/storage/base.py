@@ -39,6 +39,10 @@ class StorageProvider(ABC):
         pass
 
     @abstractmethod
+    async def get_movies_by_title(self, title: str) -> list[Movie]:
+        """Return all non-skipped movies whose title matches (case-insensitive)."""
+
+    @abstractmethod
     async def list_movies(self, status: Optional[str] = None) -> list[Movie]:
         pass
 
