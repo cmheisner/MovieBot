@@ -1,0 +1,342 @@
+from __future__ import annotations
+
+import json
+import os
+from datetime import datetime, timezone
+from typing import Optional
+
+import aiosqlite
+
+from bot.models.movie import Movie, MovieStatus
+from bot.models.poll import Poll, PollEntry
+from bot.models.schedule_entry import ScheduleEntry
+from bot.providers.storage.base import StorageProvider
+
+SCHEMA = """
+PRAGMA journal_mode = WAL;
+PRAGMA foreign_keys = ON;
+
+CREATE TABLE IF NOT EXISTS movies (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    title        TEXT    NOT NULL,
+    year         INTEGER NOT NULL,
+    notes        TEXT,
+    apple_tv_url TEXT,
+    image_url    TEXT,
+    added_by     TEXT    NOT NULL,
+    added_by_id  TEXT    NOT NULL,
+    added_at     TEXT    NOT NULL,
+    status       TEXT    NOT NULL DEFAULT 'stash',
+    omdb_data    TEXT,
+    UNIQUE (title, year)
+);
+
+CREATE TABLE IF NOT EXISTS polls (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    discord_msg_id TEXT    NOT NULL UNIQUE,
+    channel_id     TEXT    NOT NULL,
+    created_at     TEXT    NOT NULL,
+    closes_at      TEXT,
+    closed_at      TEXT,
+    status         TEXT    NOT NULL DEFAULT 'open'
+);
+
+CREATE TABLE IF NOT EXISTS poll_entries (
+    id       INTEGER PRIMARY KEY AUTOINCREMENT,
+    poll_id  INTEGER NOT NULL REFERENCES polls(id) ON DELETE CASCADE,
+    movie_id INTEGER NOT NULL REFERENCES movies(id),
+    position INTEGER NOT NULL,
+    emoji    TEXT    NOT NULL,
+    UNIQUE (poll_id, movie_id),
+    UNIQUE (poll_id, position)
+);
+
+CREATE TABLE IF NOT EXISTS schedule_entries (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    movie_id         INTEGER NOT NULL REFERENCES movies(id),
+    poll_id          INTEGER REFERENCES polls(id),
+    scheduled_for    TEXT    NOT NULL,
+    discord_event_id TEXT,
+    posted_msg_id    TEXT,
+    created_at       TEXT    NOT NULL,
+    UNIQUE (movie_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_movies_status  ON movies (status);
+CREATE INDEX IF NOT EXISTS idx_polls_status   ON polls (status);
+CREATE INDEX IF NOT EXISTS idx_schedule_date  ON schedule_entries (scheduled_for);
+"""
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _parse_dt(s: Optional[str]) -> Optional[datetime]:
+    if s is None:
+        return None
+    return datetime.fromisoformat(s)
+
+
+def _row_to_movie(row: aiosqlite.Row) -> Movie:
+    omdb = json.loads(row["omdb_data"]) if row["omdb_data"] else None
+    return Movie(
+        id=row["id"],
+        title=row["title"],
+        year=row["year"],
+        added_by=row["added_by"],
+        added_by_id=row["added_by_id"],
+        added_at=_parse_dt(row["added_at"]),
+        status=row["status"],
+        notes=row["notes"],
+        apple_tv_url=row["apple_tv_url"],
+        image_url=row["image_url"],
+        omdb_data=omdb,
+    )
+
+
+def _row_to_poll(row: aiosqlite.Row, entries: list[PollEntry]) -> Poll:
+    return Poll(
+        id=row["id"],
+        discord_msg_id=row["discord_msg_id"],
+        channel_id=row["channel_id"],
+        created_at=_parse_dt(row["created_at"]),
+        status=row["status"],
+        closes_at=_parse_dt(row["closes_at"]),
+        closed_at=_parse_dt(row["closed_at"]),
+        entries=entries,
+    )
+
+
+def _row_to_entry(row: aiosqlite.Row) -> ScheduleEntry:
+    return ScheduleEntry(
+        id=row["id"],
+        movie_id=row["movie_id"],
+        poll_id=row["poll_id"],
+        scheduled_for=_parse_dt(row["scheduled_for"]),
+        discord_event_id=row["discord_event_id"],
+        posted_msg_id=row["posted_msg_id"],
+        created_at=_parse_dt(row["created_at"]),
+    )
+
+
+class SQLiteStorageProvider(StorageProvider):
+
+    def __init__(self, db_path: str) -> None:
+        self._db_path = db_path
+        self._db: Optional[aiosqlite.Connection] = None
+
+    async def initialize(self) -> None:
+        os.makedirs(os.path.dirname(self._db_path) or ".", exist_ok=True)
+        self._db = await aiosqlite.connect(self._db_path)
+        self._db.row_factory = aiosqlite.Row
+        await self._db.executescript(SCHEMA)
+        await self._db.commit()
+
+    async def close(self) -> None:
+        if self._db:
+            await self._db.close()
+
+    # ── Movies ──────────────────────────────────────────────────────────
+
+    async def add_movie(
+        self,
+        title: str,
+        year: int,
+        added_by: str,
+        added_by_id: str,
+        notes=None,
+        apple_tv_url=None,
+        image_url=None,
+        omdb_data=None,
+    ) -> Movie:
+        existing = await self.get_movie_by_title_year(title, year)
+        if existing:
+            raise ValueError(f"{title!r} ({year}) is already in the stash (id={existing.id}).")
+
+        omdb_json = json.dumps(omdb_data) if omdb_data else None
+        now = _now_iso()
+        async with self._db.execute(
+            """
+            INSERT INTO movies (title, year, notes, apple_tv_url, image_url,
+                                added_by, added_by_id, added_at, status, omdb_data)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'stash', ?)
+            """,
+            (title, year, notes, apple_tv_url, image_url, added_by, added_by_id, now, omdb_json),
+        ) as cur:
+            movie_id = cur.lastrowid
+        await self._db.commit()
+        return await self.get_movie(movie_id)
+
+    async def get_movie(self, movie_id: int) -> Optional[Movie]:
+        async with self._db.execute("SELECT * FROM movies WHERE id = ?", (movie_id,)) as cur:
+            row = await cur.fetchone()
+        return _row_to_movie(row) if row else None
+
+    async def get_movie_by_title_year(self, title: str, year: int) -> Optional[Movie]:
+        async with self._db.execute(
+            "SELECT * FROM movies WHERE LOWER(title) = LOWER(?) AND year = ?", (title, year)
+        ) as cur:
+            row = await cur.fetchone()
+        return _row_to_movie(row) if row else None
+
+    async def list_movies(self, status: Optional[str] = None) -> list[Movie]:
+        if status and status != "all":
+            async with self._db.execute(
+                "SELECT * FROM movies WHERE status = ? ORDER BY added_at ASC", (status,)
+            ) as cur:
+                rows = await cur.fetchall()
+        else:
+            async with self._db.execute(
+                "SELECT * FROM movies WHERE status != 'skipped' ORDER BY added_at ASC"
+            ) as cur:
+                rows = await cur.fetchall()
+        return [_row_to_movie(r) for r in rows]
+
+    async def update_movie(self, movie_id: int, **fields) -> Movie:
+        allowed = {"title", "year", "notes", "apple_tv_url", "image_url", "status", "omdb_data"}
+        update_fields = {k: v for k, v in fields.items() if k in allowed}
+        if "omdb_data" in update_fields and isinstance(update_fields["omdb_data"], dict):
+            update_fields["omdb_data"] = json.dumps(update_fields["omdb_data"])
+
+        set_clause = ", ".join(f"{k} = ?" for k in update_fields)
+        values = list(update_fields.values()) + [movie_id]
+        await self._db.execute(f"UPDATE movies SET {set_clause} WHERE id = ?", values)
+        await self._db.commit()
+        return await self.get_movie(movie_id)
+
+    # ── Polls ────────────────────────────────────────────────────────────
+
+    async def add_poll(
+        self,
+        discord_msg_id: str,
+        channel_id: str,
+        movie_ids: list[int],
+        emojis: list[str],
+        closes_at: Optional[datetime] = None,
+    ) -> Poll:
+        now = _now_iso()
+        closes_iso = closes_at.isoformat() if closes_at else None
+        async with self._db.execute(
+            """
+            INSERT INTO polls (discord_msg_id, channel_id, created_at, closes_at, status)
+            VALUES (?, ?, ?, ?, 'open')
+            """,
+            (discord_msg_id, channel_id, now, closes_iso),
+        ) as cur:
+            poll_id = cur.lastrowid
+
+        for pos, (movie_id, emoji) in enumerate(zip(movie_ids, emojis), start=1):
+            await self._db.execute(
+                "INSERT INTO poll_entries (poll_id, movie_id, position, emoji) VALUES (?, ?, ?, ?)",
+                (poll_id, movie_id, pos, emoji),
+            )
+        await self._db.commit()
+        return await self.get_poll(poll_id)
+
+    async def _get_poll_entries(self, poll_id: int) -> list[PollEntry]:
+        async with self._db.execute(
+            "SELECT * FROM poll_entries WHERE poll_id = ? ORDER BY position ASC", (poll_id,)
+        ) as cur:
+            rows = await cur.fetchall()
+        return [
+            PollEntry(
+                id=r["id"], poll_id=r["poll_id"], movie_id=r["movie_id"],
+                position=r["position"], emoji=r["emoji"]
+            )
+            for r in rows
+        ]
+
+    async def get_poll(self, poll_id: int) -> Optional[Poll]:
+        async with self._db.execute("SELECT * FROM polls WHERE id = ?", (poll_id,)) as cur:
+            row = await cur.fetchone()
+        if not row:
+            return None
+        entries = await self._get_poll_entries(poll_id)
+        return _row_to_poll(row, entries)
+
+    async def get_latest_open_poll(self) -> Optional[Poll]:
+        async with self._db.execute(
+            "SELECT * FROM polls WHERE status = 'open' ORDER BY created_at DESC LIMIT 1"
+        ) as cur:
+            row = await cur.fetchone()
+        if not row:
+            return None
+        entries = await self._get_poll_entries(row["id"])
+        return _row_to_poll(row, entries)
+
+    async def close_poll(self, poll_id: int) -> Poll:
+        now = _now_iso()
+        await self._db.execute(
+            "UPDATE polls SET status = 'closed', closed_at = ? WHERE id = ?",
+            (now, poll_id),
+        )
+        await self._db.commit()
+        return await self.get_poll(poll_id)
+
+    # ── Schedule ─────────────────────────────────────────────────────────
+
+    async def add_schedule_entry(
+        self,
+        movie_id: int,
+        scheduled_for: datetime,
+        poll_id: Optional[int] = None,
+    ) -> ScheduleEntry:
+        now = _now_iso()
+        try:
+            async with self._db.execute(
+                """
+                INSERT INTO schedule_entries (movie_id, poll_id, scheduled_for, created_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (movie_id, poll_id, scheduled_for.isoformat(), now),
+            ) as cur:
+                entry_id = cur.lastrowid
+        except aiosqlite.IntegrityError:
+            raise ValueError(f"Movie id={movie_id} is already scheduled.")
+        await self._db.commit()
+        return await self.get_schedule_entry(entry_id)
+
+    async def get_schedule_entry(self, entry_id: int) -> Optional[ScheduleEntry]:
+        async with self._db.execute(
+            "SELECT * FROM schedule_entries WHERE id = ?", (entry_id,)
+        ) as cur:
+            row = await cur.fetchone()
+        return _row_to_entry(row) if row else None
+
+    async def list_schedule_entries(
+        self, upcoming_only: bool = True, limit: int = 10
+    ) -> list[ScheduleEntry]:
+        if upcoming_only:
+            now = _now_iso()
+            async with self._db.execute(
+                """
+                SELECT * FROM schedule_entries
+                WHERE scheduled_for >= ?
+                ORDER BY scheduled_for ASC
+                LIMIT ?
+                """,
+                (now, limit),
+            ) as cur:
+                rows = await cur.fetchall()
+        else:
+            async with self._db.execute(
+                "SELECT * FROM schedule_entries ORDER BY scheduled_for DESC LIMIT ?", (limit,)
+            ) as cur:
+                rows = await cur.fetchall()
+        return [_row_to_entry(r) for r in rows]
+
+    async def update_schedule_entry(self, entry_id: int, **fields) -> ScheduleEntry:
+        allowed = {"discord_event_id", "posted_msg_id", "scheduled_for"}
+        update_fields = {k: v for k, v in fields.items() if k in allowed}
+        if "scheduled_for" in update_fields and isinstance(update_fields["scheduled_for"], datetime):
+            update_fields["scheduled_for"] = update_fields["scheduled_for"].isoformat()
+        set_clause = ", ".join(f"{k} = ?" for k in update_fields)
+        values = list(update_fields.values()) + [entry_id]
+        await self._db.execute(f"UPDATE schedule_entries SET {set_clause} WHERE id = ?", values)
+        await self._db.commit()
+        return await self.get_schedule_entry(entry_id)
+
+    async def delete_schedule_entry(self, entry_id: int) -> None:
+        await self._db.execute("DELETE FROM schedule_entries WHERE id = ?", (entry_id,))
+        await self._db.commit()

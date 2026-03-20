@@ -1,0 +1,101 @@
+from __future__ import annotations
+from abc import ABC, abstractmethod
+from datetime import datetime
+from typing import Optional
+
+from bot.models.movie import Movie
+from bot.models.poll import Poll, PollEntry
+from bot.models.schedule_entry import ScheduleEntry
+
+
+class StorageProvider(ABC):
+
+    @abstractmethod
+    async def initialize(self) -> None:
+        """Create tables / run migrations."""
+
+    # ── Movies ──────────────────────────────────────────────────────────
+
+    @abstractmethod
+    async def add_movie(
+        self,
+        title: str,
+        year: int,
+        added_by: str,
+        added_by_id: str,
+        notes: Optional[str] = None,
+        apple_tv_url: Optional[str] = None,
+        image_url: Optional[str] = None,
+        omdb_data: Optional[dict] = None,
+    ) -> Movie:
+        """Insert a new movie; raises ValueError on duplicate (title, year)."""
+
+    @abstractmethod
+    async def get_movie(self, movie_id: int) -> Optional[Movie]:
+        pass
+
+    @abstractmethod
+    async def get_movie_by_title_year(self, title: str, year: int) -> Optional[Movie]:
+        pass
+
+    @abstractmethod
+    async def list_movies(self, status: Optional[str] = None) -> list[Movie]:
+        pass
+
+    @abstractmethod
+    async def update_movie(self, movie_id: int, **fields) -> Movie:
+        pass
+
+    # ── Polls ────────────────────────────────────────────────────────────
+
+    @abstractmethod
+    async def add_poll(
+        self,
+        discord_msg_id: str,
+        channel_id: str,
+        movie_ids: list[int],
+        emojis: list[str],
+        closes_at: Optional[datetime] = None,
+    ) -> Poll:
+        pass
+
+    @abstractmethod
+    async def get_poll(self, poll_id: int) -> Optional[Poll]:
+        pass
+
+    @abstractmethod
+    async def get_latest_open_poll(self) -> Optional[Poll]:
+        pass
+
+    @abstractmethod
+    async def close_poll(self, poll_id: int) -> Poll:
+        pass
+
+    # ── Schedule ─────────────────────────────────────────────────────────
+
+    @abstractmethod
+    async def add_schedule_entry(
+        self,
+        movie_id: int,
+        scheduled_for: datetime,
+        poll_id: Optional[int] = None,
+    ) -> ScheduleEntry:
+        """Raises ValueError if movie_id already has a schedule entry."""
+
+    @abstractmethod
+    async def get_schedule_entry(self, entry_id: int) -> Optional[ScheduleEntry]:
+        pass
+
+    @abstractmethod
+    async def list_schedule_entries(
+        self, upcoming_only: bool = True, limit: int = 10
+    ) -> list[ScheduleEntry]:
+        pass
+
+    @abstractmethod
+    async def update_schedule_entry(self, entry_id: int, **fields) -> ScheduleEntry:
+        pass
+
+    @abstractmethod
+    async def delete_schedule_entry(self, entry_id: int) -> None:
+        pass
