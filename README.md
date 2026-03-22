@@ -44,7 +44,7 @@ A Discord bot for managing movie nights — from suggestions to scheduling to ev
 
 | Command | Parameters | Description |
 |---|---|---|
-| `/reviews` | `title`, `count` *(default: 3, max 5)* | Post the lowest-rated user reviews for a movie via TMDB. Defaults to the next scheduled movie if no title is given. Great to run at the start of movie night. Posts to the general channel. Requires `TMDB_API_KEY` in `.env` and OMDB metadata on the movie. |
+| `/reviews` | `title`, `count` *(default: 3, max 5)* | Post the lowest-rated user reviews for a movie via Metacritic. Defaults to the next scheduled movie if no title is given. Great to run at the start of movie night. Posts to the general channel. |
 
 ### User Preferences
 
