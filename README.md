@@ -38,6 +38,13 @@ A Discord bot for managing movie nights — from suggestions to scheduling to ev
 | `/schedule-history` | `limit` *(default: 10)* | Show the full schedule — both past and upcoming entries. |
 | `/schedule-add` | `title` *(required)*, `date` *(YYYY-MM-DD)*, `time` *(HH:MM)*, `timezone` | Manually schedule a movie, bypassing a poll. Defaults to the next movie night (Wednesday or Thursday at 10:30 PM Eastern) if no date is given. `time` is interpreted in the user's saved timezone (set via `/set-timezone`) or the inline `timezone` parameter — which is also saved for future use. |
 | `/schedule-remove` | `schedule_id` *(required)* | Remove a schedule entry. Deletes any linked Discord event and returns the movie to **Stash** status. |
+| `/schedule-reschedule` | `movie`, `new_date` *(YYYY-MM-DD)*, `swap_with` | Move a scheduled movie to a new date and automatically shift all subsequent entries by one week. All three params are optional — omit `movie` to target the next upcoming movie, omit `new_date` to push exactly one week forward, and use `swap_with` to insert a stash movie into the vacated slot. Any linked Discord events for affected entries are deleted automatically (re-create them with `/event-create`). |
+
+### Reviews
+
+| Command | Parameters | Description |
+|---|---|---|
+| `/reviews` | `title`, `count` *(default: 3, max 5)* | Post the lowest-rated user reviews for a movie via TMDB. Defaults to the next scheduled movie if no title is given. Great to run at the start of movie night. Posts to the general channel. Requires `TMDB_API_KEY` in `.env` and OMDB metadata on the movie. |
 
 ### User Preferences
 
@@ -88,6 +95,21 @@ The bot expects three channels in your server. Set their IDs in `.env`:
 | `STASH_CHANNEL_ID` | Where new movie additions are posted |
 | `GENERAL_CHANNEL_ID` | Where voting polls are sent |
 | `SCHEDULE_CHANNEL_ID` | Where the schedule is maintained |
+
+## Dev Mode
+
+Set these in `.env` during development to route all bot activity to a single test channel:
+
+```
+DEV_MODE=true
+BOT_TESTING_CHANNEL_ID=<your-bot-testing-channel-id>
+```
+
+When `DEV_MODE=true`:
+- Slash commands are rejected (ephemeral error) if run outside the bot-testing channel
+- All channel posts (stash confirmations, polls, reviews) are redirected to the bot-testing channel
+
+Remove or set `DEV_MODE=false` when ready for production.
 
 ## Requirements
 

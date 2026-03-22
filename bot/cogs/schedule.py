@@ -1,7 +1,7 @@
 from __future__ import annotations
 import logging
 import zoneinfo
-from datetime import datetime, timezone as dt_timezone
+from datetime import datetime, timezone as dt_timezone, timedelta
 
 import discord
 from discord import app_commands
@@ -191,6 +191,132 @@ class ScheduleCog(commands.Cog, name="Schedule"):
 
         title = movie.display_title if movie else f"Movie #{entry.movie_id}"
         await interaction.followup.send(f"🗑️ Removed **{title}** from the schedule.", ephemeral=True)
+
+    # ── /schedule-reschedule ─────────────────────────────────────────────
+
+    @app_commands.command(
+        name="schedule-reschedule",
+        description="Move a scheduled movie to a new date, shifting subsequent entries by 1 week.",
+    )
+    @app_commands.describe(
+        movie="Movie to reschedule (defaults to next upcoming)",
+        new_date="Target date YYYY-MM-DD (defaults to current slot +7 days)",
+        swap_with="Movie from the stash to put in the vacated slot",
+    )
+    async def schedule_reschedule(
+        self,
+        interaction: discord.Interaction,
+        movie: str | None = None,
+        new_date: str | None = None,
+        swap_with: str | None = None,
+    ):
+        await interaction.response.defer()
+
+        # ── 1. Resolve the target movie & its schedule entry ──────────────
+        if movie:
+            target_movie = await resolve_movie(self.bot.storage, interaction, movie, None)
+            if not target_movie:
+                return
+            all_entries = await self.bot.storage.list_schedule_entries(upcoming_only=True, limit=100)
+            entry_target = next((e for e in all_entries if e.movie_id == target_movie.id), None)
+            if not entry_target:
+                await interaction.followup.send(
+                    f"⚠️ **{target_movie.display_title}** is not currently scheduled.", ephemeral=True
+                )
+                return
+        else:
+            all_entries = await self.bot.storage.list_schedule_entries(upcoming_only=True, limit=100)
+            if not all_entries:
+                await interaction.followup.send("⚠️ No upcoming scheduled movies found.", ephemeral=True)
+                return
+            entry_target = all_entries[0]
+            target_movie = await self.bot.storage.get_movie(entry_target.movie_id)
+
+        d_old = entry_target.scheduled_for  # UTC-aware datetime
+
+        # ── 2. Determine new datetime ─────────────────────────────────────
+        if new_date:
+            try:
+                naive_date = datetime.strptime(new_date, "%Y-%m-%d")
+            except ValueError:
+                await interaction.followup.send("⚠️ Invalid date format. Use YYYY-MM-DD.", ephemeral=True)
+                return
+            # Keep same time-of-day as original slot (in Eastern)
+            eastern_old = d_old.astimezone(TZ_EASTERN)
+            naive_new = naive_date.replace(
+                hour=eastern_old.hour, minute=eastern_old.minute, second=0, microsecond=0
+            )
+            new_dt = naive_new.replace(tzinfo=TZ_EASTERN).astimezone(dt_timezone.utc)
+        else:
+            new_dt = d_old + timedelta(days=7)
+
+        if new_dt <= d_old:
+            await interaction.followup.send(
+                "⚠️ New date must be after the current scheduled date.", ephemeral=True
+            )
+            return
+
+        # ── 3. Shift all entries at or after new_dt (except entry_target) ─
+        upcoming = await self.bot.storage.list_schedule_entries(upcoming_only=True, limit=100)
+        entries_to_shift = [
+            e for e in upcoming
+            if e.id != entry_target.id and e.scheduled_for >= new_dt
+        ]
+
+        shifted_titles = []
+        for e in entries_to_shift:
+            shifted_dt = e.scheduled_for + timedelta(days=7)
+            if e.discord_event_id:
+                try:
+                    disc_event = await interaction.guild.fetch_scheduled_event(int(e.discord_event_id))
+                    await disc_event.delete()
+                except Exception as exc:
+                    log.warning("Could not delete Discord event %s: %s", e.discord_event_id, exc)
+                await self.bot.storage.update_schedule_entry(e.id, discord_event_id=None, scheduled_for=shifted_dt)
+            else:
+                await self.bot.storage.update_schedule_entry(e.id, scheduled_for=shifted_dt)
+            m = await self.bot.storage.get_movie(e.movie_id)
+            if m:
+                shifted_titles.append(f"• **{m.display_title}** → {format_dt_eastern(shifted_dt)}")
+
+        # ── 4. Move entry_target to new_dt ────────────────────────────────
+        if entry_target.discord_event_id:
+            try:
+                disc_event = await interaction.guild.fetch_scheduled_event(int(entry_target.discord_event_id))
+                await disc_event.delete()
+            except Exception as exc:
+                log.warning("Could not delete Discord event %s: %s", entry_target.discord_event_id, exc)
+            await self.bot.storage.update_schedule_entry(entry_target.id, discord_event_id=None, scheduled_for=new_dt)
+        else:
+            await self.bot.storage.update_schedule_entry(entry_target.id, scheduled_for=new_dt)
+
+        # ── 5. Optionally insert swap_with movie into the vacated slot ────
+        swap_line = ""
+        if swap_with:
+            swap_movie = await resolve_movie(self.bot.storage, interaction, swap_with, None)
+            if swap_movie:
+                if swap_movie.status != MovieStatus.STASH:
+                    swap_line = (
+                        f"\n⚠️ **{swap_movie.display_title}** has status '{swap_movie.status}' "
+                        f"(must be 'stash') — skipped insertion."
+                    )
+                else:
+                    try:
+                        await self.bot.storage.add_schedule_entry(movie_id=swap_movie.id, scheduled_for=d_old)
+                        await self.bot.storage.update_movie(swap_movie.id, status=MovieStatus.SCHEDULED)
+                        swap_line = f"\n🔄 **{swap_movie.display_title}** inserted at {format_dt_eastern(d_old)}."
+                    except ValueError as e:
+                        swap_line = f"\n⚠️ Could not insert **{swap_movie.display_title}**: {e}"
+
+        # ── 6. Build response ─────────────────────────────────────────────
+        lines = [f"📅 **{target_movie.display_title}** rescheduled to **{format_dt_eastern(new_dt)}**."]
+        if swap_line:
+            lines.append(swap_line)
+        if shifted_titles:
+            lines.append(f"\n**{len(shifted_titles)} subsequent movie(s) shifted +1 week:**")
+            lines.extend(shifted_titles)
+        lines.append("\n-# Run `/event-create` to recreate any Discord events.")
+        await interaction.followup.send("\n".join(lines))
 
 
 async def setup(bot):

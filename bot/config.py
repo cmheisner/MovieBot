@@ -13,7 +13,10 @@ class BotConfig:
     general_channel_id: int
     schedule_channel_id: int
     omdb_api_key: str = ""
+    tmdb_api_key: str = ""
     db_path: str = "data/moviebot.db"
+    dev_mode: bool = False
+    bot_testing_channel_id: int = 0
 
     @classmethod
     def from_env(cls) -> "BotConfig":
@@ -30,5 +33,8 @@ class BotConfig:
             general_channel_id=int(require("GENERAL_CHANNEL_ID")),
             schedule_channel_id=int(require("SCHEDULE_CHANNEL_ID")),
             omdb_api_key=os.environ.get("OMDB_API_KEY", ""),
+            tmdb_api_key=os.environ.get("TMDB_API_KEY", ""),
             db_path=os.environ.get("DB_PATH", "data/moviebot.db"),
+            dev_mode=os.environ.get("DEV_MODE", "").lower() in ("1", "true", "yes"),
+            bot_testing_channel_id=int(os.environ.get("BOT_TESTING_CHANNEL_ID", "0")),
         )

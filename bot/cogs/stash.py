@@ -75,7 +75,7 @@ class MovieSelectView(discord.ui.View):
             return
 
         embed = movie_card(movie, title_prefix="✅ Added to stash: ")
-        stash_ch = self.bot.get_channel(self.bot.config.stash_channel_id)
+        stash_ch = self.bot.get_channel(self.bot.get_active_channel_id(self.bot.config.stash_channel_id))
         if stash_ch and stash_ch != self.original_interaction.channel:
             await stash_ch.send(embed=embed)
         await interaction.edit_original_response(content=f"✅ **{movie.display_title}** added to the stash.", embed=None, view=None)
@@ -161,7 +161,7 @@ class StashCog(commands.Cog, name="Stash"):
             return
 
         embed = movie_card(movie, title_prefix="✅ Added to stash: ")
-        stash_ch = self.bot.get_channel(self.bot.config.stash_channel_id)
+        stash_ch = self.bot.get_channel(self.bot.get_active_channel_id(self.bot.config.stash_channel_id))
         if stash_ch and stash_ch != interaction.channel:
             await stash_ch.send(embed=embed)
         await interaction.followup.send(f"✅ **{movie.display_title}** added to the stash.", ephemeral=True)
