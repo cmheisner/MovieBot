@@ -1,105 +1,101 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import Optional
 
 import aiohttp
 
 log = logging.getLogger(__name__)
 
-TMDB_BASE = "https://api.themoviedb.org/3"
+MC_API = "https://backend.metacritic.com/reviews/metacritic/user/movies/{slug}/web"
+MC_PARAMS = {
+    "limit": "50",
+    "filterBySentiment": "negative",
+    "sort": "score",
+    "componentName": "user-reviews",
+    "componentDisplayName": "user Reviews",
+    "componentType": "ReviewList",
+}
+
+_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+    ),
+    "Accept": "application/json",
+    "Referer": "https://www.metacritic.com/",
+}
 
 
 async def fetch_worst_reviews(
-    imdb_id: str,
-    tmdb_api_key: str,
+    title: str,
+    year: int,
+    imdb_id: Optional[str],
     count: int = 5,
 ) -> list[dict]:
     """
-    Fetch the lowest-rated user reviews for a movie via the TMDB API.
+    Fetch the lowest-rated user reviews from Metacritic.
 
-    Steps:
-      1. Look up the TMDB movie ID from the IMDB ID.
-      2. Fetch user reviews and sort by rating ascending.
-
-    Returns a list of dicts with keys: title, text, rating, author, date.
-    Returns an empty list on any failure (missing API key, no reviews, network error).
+    Tries negative reviews first; falls back to all reviews if none found.
     """
-    if not tmdb_api_key:
-        log.warning("TMDB_API_KEY is not set — cannot fetch reviews.")
-        return []
+    slug = _make_slug(title)
+    log.info("Metacritic: '%s' (%s) → slug '%s'", title, year, slug)
 
-    headers = {"Authorization": f"Bearer {tmdb_api_key}", "Accept": "application/json"}
+    async with aiohttp.ClientSession(headers=_HEADERS) as session:
+        reviews = await _fetch(session, slug, sentiment="negative")
 
-    async with aiohttp.ClientSession(headers=headers) as session:
-        # ── Step 1: resolve IMDB ID → TMDB movie ID ───────────────────────
-        tmdb_id = await _find_tmdb_id(session, imdb_id)
-        if not tmdb_id:
-            log.warning("Could not find TMDB movie for IMDB ID %s", imdb_id)
-            return []
-
-        # ── Step 2: fetch reviews ─────────────────────────────────────────
-        reviews = await _fetch_reviews(session, tmdb_id)
+        # No negative reviews? Pull all and take the worst ourselves
+        if not reviews:
+            log.info("Metacritic: no negative reviews for '%s', fetching all", slug)
+            reviews = await _fetch(session, slug, sentiment="all")
 
     if not reviews:
+        log.warning("Metacritic: 0 reviews found for slug '%s'", slug)
         return []
 
-    # Sort by rating ascending (worst first), treat None ratings as lowest
-    reviews.sort(key=lambda r: (r["rating"] is None, -(r["rating"] or 0)))
-
+    # Sort ascending by score (worst first), unrated last
+    reviews.sort(key=lambda r: (r["rating"] is None, r["rating"] if r["rating"] is not None else 99))
     return reviews[:count]
 
 
-async def _find_tmdb_id(session: aiohttp.ClientSession, imdb_id: str) -> Optional[int]:
-    """Use TMDB /find endpoint to get the TMDB movie ID from an IMDB ID."""
-    url = f"{TMDB_BASE}/find/{imdb_id}"
-    params = {"external_source": "imdb_id"}
+async def _fetch(session: aiohttp.ClientSession, slug: str, sentiment: str) -> list[dict]:
+    url = MC_API.format(slug=slug)
+    params = {**MC_PARAMS, "filterBySentiment": sentiment, "offset": "0"}
     try:
-        async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+        async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=12)) as resp:
+            if resp.status == 404:
+                log.warning("Metacritic: 404 for slug '%s'", slug)
+                return []
             if resp.status != 200:
-                log.warning("TMDB /find returned %d for %s", resp.status, imdb_id)
-                return None
-            data = await resp.json()
-            results = data.get("movie_results", [])
-            if results:
-                return results[0]["id"]
+                log.warning("Metacritic: HTTP %d for '%s'", resp.status, slug)
+                return []
+            data = await resp.json(content_type=None)
     except Exception as exc:
-        log.warning("TMDB /find request failed: %s", exc)
-    return None
+        log.warning("Metacritic request failed: %s", exc)
+        return []
+
+    items = (data.get("data") or {}).get("items") or []
+    log.info("Metacritic: %d '%s' review(s) for '%s'", len(items), sentiment, slug)
+
+    results = []
+    for r in items:
+        quote = (r.get("quote") or "").strip()
+        results.append({
+            "title": "",
+            "text": quote[:400].rstrip() + ("…" if len(quote) > 400 else ""),
+            "rating": r.get("score"),        # Metacritic scores 0–10
+            "author": r.get("author") or "Anonymous",
+            "date": (r.get("date") or "")[:10],
+        })
+    return results
 
 
-async def _fetch_reviews(session: aiohttp.ClientSession, tmdb_id: int) -> list[dict]:
-    """Fetch all pages of TMDB user reviews for a movie."""
-    reviews: list[dict] = []
-    page = 1
-
-    while True:
-        url = f"{TMDB_BASE}/movie/{tmdb_id}/reviews"
-        params = {"page": page}
-        try:
-            async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=10)) as resp:
-                if resp.status != 200:
-                    break
-                data = await resp.json()
-        except Exception as exc:
-            log.warning("TMDB reviews request failed: %s", exc)
-            break
-
-        for r in data.get("results", []):
-            author_details = r.get("author_details", {})
-            rating = author_details.get("rating")
-            # TMDB ratings are out of 10
-            reviews.append({
-                "title": "",  # TMDB reviews don't have a separate headline
-                "text": (r.get("content") or "")[:350].rstrip() + ("…" if len(r.get("content") or "") > 350 else ""),
-                "rating": int(rating) if rating is not None else None,
-                "author": r.get("author") or "Anonymous",
-                "date": (r.get("created_at") or "")[:10],  # YYYY-MM-DD
-            })
-
-        total_pages = data.get("total_pages", 1)
-        if page >= total_pages or page >= 3:  # cap at 3 pages to stay fast
-            break
-        page += 1
-
-    return reviews
+def _make_slug(title: str) -> str:
+    """Convert a movie title to a Metacritic URL slug."""
+    slug = title.lower()
+    slug = slug.replace("&", "and")
+    slug = re.sub(r"[^a-z0-9\s]", "", slug)   # strip punctuation
+    slug = re.sub(r"\s+", "-", slug.strip())   # spaces → hyphens
+    slug = re.sub(r"-+", "-", slug)            # collapse runs
+    return slug
