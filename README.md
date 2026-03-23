@@ -21,6 +21,7 @@ A Discord bot for managing movie nights — from suggestions to scheduling to ev
 | `/stash-edit` | `title` *(required)*, `year`, `notes`, `apple_tv_url`, `image_url`, `group` | Edit a movie's notes, Apple TV URL, image, or group. Only the user who added the movie (or an admin) can edit it. |
 | `/stash-remove` | `title` *(required)*, `year` | Remove a movie from the stash (marks it as skipped). Only the original adder or an admin can remove it. |
 | `/stash-watched` | `title` *(required)*, `year` | Mark a movie as watched and update its status. |
+| `/stash-archive` | `limit` *(default: 20, max 50)* | Browse all movies ever watched, sorted newest first, with their watch date and IMDB rating. |
 
 ### Voting
 
@@ -38,7 +39,16 @@ A Discord bot for managing movie nights — from suggestions to scheduling to ev
 | `/schedule-history` | `limit` *(default: 10)* | Show the full schedule — both past and upcoming entries. |
 | `/schedule-add` | `title` *(required)*, `date` *(YYYY-MM-DD)*, `time` *(HH:MM)*, `timezone` | Manually schedule a movie, bypassing a poll. Defaults to the next movie night (Wednesday or Thursday at 10:30 PM Eastern) if no date is given. `time` is interpreted in the user's saved timezone (set via `/set-timezone`) or the inline `timezone` parameter — which is also saved for future use. |
 | `/schedule-remove` | `schedule_id` *(required)* | Remove a schedule entry. Deletes any linked Discord event and returns the movie to **Stash** status. |
+| `/calendar` | `month` *(1–12, default: current)*, `year` *(default: current)* | Show a month-view calendar with movie nights highlighted in yellow. Scheduled movies are listed below the grid with dates and IMDB ratings. |
 | `/schedule-reschedule` | `movie`, `new_date` *(YYYY-MM-DD)*, `swap_with` | Move a scheduled movie to a new date and automatically shift all subsequent entries by one week. All three params are optional — omit `movie` to target the next upcoming movie, omit `new_date` to push exactly one week forward, and use `swap_with` to insert a stash movie into the vacated slot. Any linked Discord events for affected entries are deleted automatically (re-create them with `/event-create`). |
+
+### Seasons
+
+| Command | Parameters | Description |
+|---|---|---|
+| `/season-list` | `season` *(default: This Winter)*, `status` *(default: all)* | List movies in a seasonal collection. Choices: **This Winter**, **This Spring**, **This Summer**, **This Fall**. Filter by status to see just what's watched, scheduled, or still in the stash. |
+| `/season-tag` | `title` *(required)*, `season` *(required)*, `year` | Tag a movie as part of a seasonal collection. |
+| `/season-overview` | — | Show a summary of all seasonal collections with watched/scheduled/stash counts. |
 
 ### Reviews
 

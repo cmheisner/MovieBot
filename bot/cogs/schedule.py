@@ -1,4 +1,5 @@
 from __future__ import annotations
+import calendar
 import logging
 import zoneinfo
 from datetime import datetime, timezone as dt_timezone, timedelta
@@ -123,18 +124,37 @@ class ScheduleCog(commands.Cog, name="Schedule"):
         else:
             scheduled_for = next_movie_night()
 
+        rescheduled_from = None
         try:
             entry = await self.bot.storage.add_schedule_entry(
                 movie_id=movie.id,
                 scheduled_for=scheduled_for,
             )
-        except ValueError as e:
-            await interaction.followup.send(f"⚠️ {e}", ephemeral=True)
-            return
+        except ValueError:
+            # Already scheduled — find the existing entry and update it instead
+            existing = await self.bot.storage.get_schedule_entry_for_movie(movie.id)
+            if not existing:
+                await interaction.followup.send("⚠️ Could not find the existing schedule entry.", ephemeral=True)
+                return
+            rescheduled_from = existing.scheduled_for
+            # Delete old Discord event if present
+            if existing.discord_event_id:
+                try:
+                    disc_event = await interaction.guild.fetch_scheduled_event(int(existing.discord_event_id))
+                    await disc_event.delete()
+                except Exception as exc:
+                    log.warning("Could not delete Discord event %s: %s", existing.discord_event_id, exc)
+            entry = await self.bot.storage.update_schedule_entry(
+                existing.id, discord_event_id=None, scheduled_for=scheduled_for
+            )
 
         await self.bot.storage.update_movie(movie.id, status=MovieStatus.SCHEDULED)
         eastern_str = format_dt_eastern(scheduled_for)
-        msg = f"✅ **{movie.display_title}** scheduled for **{eastern_str}** (entry id={entry.id})."
+        if rescheduled_from:
+            old_str = format_dt_eastern(rescheduled_from)
+            msg = f"⚠️ **{movie.display_title}** was already scheduled for {old_str} — moved to **{eastern_str}**."
+        else:
+            msg = f"✅ **{movie.display_title}** scheduled for **{eastern_str}** (entry id={entry.id})."
         if tz_name and user_tz is not TZ_EASTERN:
             local_str = scheduled_for.astimezone(user_tz).strftime("%-I:%M %p %Z")
             msg += f"\n-# Your local time: {local_str}"
@@ -213,23 +233,32 @@ class ScheduleCog(commands.Cog, name="Schedule"):
         await interaction.response.defer()
 
         # ── 1. Resolve the target movie & its schedule entry ──────────────
+        # Use upcoming_only=False so past-due (not yet watched) movies can be rescheduled too
+        all_entries = await self.bot.storage.list_schedule_entries(upcoming_only=False, limit=500)
+        # Re-sort ascending so [0] is the nearest entry (list_schedule_entries DESC when upcoming_only=False)
+        all_entries_asc = sorted(all_entries, key=lambda e: e.scheduled_for)
+
         if movie:
             target_movie = await resolve_movie(self.bot.storage, interaction, movie, None)
             if not target_movie:
                 return
-            all_entries = await self.bot.storage.list_schedule_entries(upcoming_only=True, limit=100)
-            entry_target = next((e for e in all_entries if e.movie_id == target_movie.id), None)
+            entry_target = next((e for e in all_entries_asc if e.movie_id == target_movie.id), None)
             if not entry_target:
                 await interaction.followup.send(
                     f"⚠️ **{target_movie.display_title}** is not currently scheduled.", ephemeral=True
                 )
                 return
         else:
-            all_entries = await self.bot.storage.list_schedule_entries(upcoming_only=True, limit=100)
-            if not all_entries:
-                await interaction.followup.send("⚠️ No upcoming scheduled movies found.", ephemeral=True)
+            # Default: pick the closest entry (past or future) that hasn't been marked watched
+            upcoming_asc = [e for e in all_entries_asc
+                            if e.scheduled_for >= datetime.now(dt_timezone.utc)]
+            if upcoming_asc:
+                entry_target = upcoming_asc[0]
+            elif all_entries_asc:
+                entry_target = all_entries_asc[-1]  # most recent past entry
+            else:
+                await interaction.followup.send("⚠️ No scheduled movies found.", ephemeral=True)
                 return
-            entry_target = all_entries[0]
             target_movie = await self.bot.storage.get_movie(entry_target.movie_id)
 
         d_old = entry_target.scheduled_for  # UTC-aware datetime
@@ -250,16 +279,15 @@ class ScheduleCog(commands.Cog, name="Schedule"):
         else:
             new_dt = d_old + timedelta(days=7)
 
-        if new_dt <= d_old:
+        if new_dt == d_old:
             await interaction.followup.send(
-                "⚠️ New date must be after the current scheduled date.", ephemeral=True
+                "⚠️ The new date is the same as the current scheduled date — nothing to change.", ephemeral=True
             )
             return
 
         # ── 3. Shift all entries at or after new_dt (except entry_target) ─
-        upcoming = await self.bot.storage.list_schedule_entries(upcoming_only=True, limit=100)
         entries_to_shift = [
-            e for e in upcoming
+            e for e in all_entries_asc
             if e.id != entry_target.id and e.scheduled_for >= new_dt
         ]
 
@@ -317,6 +345,108 @@ class ScheduleCog(commands.Cog, name="Schedule"):
             lines.extend(shifted_titles)
         lines.append("\n-# Run `/event-create` to recreate any Discord events.")
         await interaction.followup.send("\n".join(lines))
+
+
+    # ── /calendar ────────────────────────────────────────────────────────
+
+    @app_commands.command(
+        name="calendar",
+        description="Show the movie night calendar for a given month.",
+    )
+    @app_commands.describe(
+        month="Month number 1–12 (default: current month)",
+        year="4-digit year (default: current year)",
+    )
+    async def calendar_view(
+        self,
+        interaction: discord.Interaction,
+        month: int | None = None,
+        year: int | None = None,
+    ):
+        await interaction.response.defer()
+
+        now_eastern = datetime.now(TZ_EASTERN)
+        month = month or now_eastern.month
+        year = year or now_eastern.year
+
+        if not (1 <= month <= 12):
+            await interaction.followup.send("⚠️ Month must be between 1 and 12.", ephemeral=True)
+            return
+        if not (2000 <= year <= 2100):
+            await interaction.followup.send("⚠️ Year must be between 2000 and 2100.", ephemeral=True)
+            return
+
+        # Fetch all schedule entries, filter to this month (in Eastern time)
+        all_entries = await self.bot.storage.list_schedule_entries(upcoming_only=False, limit=500)
+
+        def _to_eastern(dt: datetime) -> datetime:
+            """Convert dt to Eastern, treating naive datetimes as UTC."""
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=dt_timezone.utc)
+            return dt.astimezone(TZ_EASTERN)
+
+        month_entries = [
+            e for e in all_entries
+            if _to_eastern(e.scheduled_for).month == month
+            and _to_eastern(e.scheduled_for).year == year
+        ]
+
+        # Map day-of-month → movie title
+        movie_days: dict[int, str] = {}
+        for e in sorted(month_entries, key=lambda x: x.scheduled_for):
+            day = _to_eastern(e.scheduled_for).day
+            m = await self.bot.storage.get_movie(e.movie_id)
+            if m:
+                movie_days[day] = m.display_title
+
+        # Render ANSI calendar (Discord supports \x1b escape in ```ansi blocks)
+        YELLOW_BOLD = "\x1b[1;33m"
+        RESET = "\x1b[0m"
+
+        cal = calendar.monthcalendar(year, month)
+        header = "Mo Tu We Th Fr Sa Su"
+        rows = [header]
+        for week in cal:
+            cells = []
+            for day in week:
+                if day == 0:
+                    cells.append("  ")
+                elif day in movie_days:
+                    cells.append(f"{YELLOW_BOLD}{day:2d}{RESET}")
+                else:
+                    cells.append(f"{day:2d}")
+            rows.append(" ".join(cells))
+
+        month_name = calendar.month_name[month]
+        grid = "\n".join(rows)
+        code_block = f"```ansi\n{month_name} {year}\n\n{grid}\n```"
+
+        # Schedule legend
+        if movie_days:
+            legend_lines = []
+            for e in sorted(month_entries, key=lambda x: x.scheduled_for):
+                day = _to_eastern(e.scheduled_for).day
+                if day in movie_days:
+                    m = await self.bot.storage.get_movie(e.movie_id)
+                    title = m.display_title if m else f"Movie #{e.movie_id}"
+                    rating = ""
+                    if m and m.omdb_data:
+                        r = m.omdb_data.get("imdbRating", "")
+                        if r and r != "N/A":
+                            rating = f" ⭐{r}"
+                    date_str = _to_eastern(e.scheduled_for).strftime("%a %b %-d")
+                    legend_lines.append(f"🎬 {date_str} — **{title}**{rating}")
+            legend = "\n".join(legend_lines)
+        else:
+            legend = "_No movies scheduled this month. Use `/schedule-add` to add one._"
+
+        embed = discord.Embed(
+            title=f"📅 {month_name} {year}",
+            description=code_block + "\n" + legend,
+            color=discord.Color.blurple(),
+        )
+        embed.set_footer(text="Movie nights: Wed & Thu at 10:30 PM ET · Highlighted in yellow")
+        await interaction.followup.send(embed=embed)
 
 
 async def setup(bot):

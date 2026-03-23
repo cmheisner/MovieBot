@@ -18,6 +18,7 @@ COGS = [
     "bot.cogs.events",
     "bot.cogs.user",
     "bot.cogs.reviews",
+    "bot.cogs.seasons",
 ]
 
 

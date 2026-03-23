@@ -105,6 +105,15 @@ class StorageProvider(ABC):
     async def delete_schedule_entry(self, entry_id: int) -> None:
         pass
 
+    @abstractmethod
+    async def get_schedule_entry_for_movie(self, movie_id: int) -> Optional[ScheduleEntry]:
+        pass
+
+    @abstractmethod
+    async def list_watched_history(self, limit: int = 50) -> list[tuple[Movie, Optional[datetime]]]:
+        """Return watched movies paired with their scheduled_for date, newest first."""
+        pass
+
     # ── User Preferences ─────────────────────────────────────────────────
 
     @abstractmethod
