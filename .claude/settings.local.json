@@ -13,7 +13,10 @@
       "Bash(sudo cp:*)",
       "Bash(pip3 install:*)",
       "Bash(curl -s \"https://www.metacritic.com/movie/the-greasy-strangler/user-reviews/?sort-by=score&num_items=100\" -H \"User-Agent: Mozilla/5.0 \\(X11; Linux x86_64\\) AppleWebKit/537.36 \\(KHTML, like Gecko\\) Chrome/122.0.0.0 Safari/537.36\")",
-      "Bash(git checkout:*)"
+      "Bash(git checkout:*)",
+      "Bash(python -m venv venv)",
+      "Bash(d:/Projects/MovieBot/venv/Scripts/pip install:*)",
+      "Bash(venv/Scripts/python main.py)"
     ]
   }
 }

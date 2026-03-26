@@ -79,9 +79,21 @@ A Discord bot for managing movie nights — from suggestions to scheduling to ev
 The bot role also needs the **Manage Events** permission in your server to create Discord Scheduled Events.
 
 **2. Install dependencies**
+
+It's recommended to use a virtual environment:
 ```bash
+python -m venv venv
+
+# Windows
+venv\Scripts\activate
+
+# macOS/Linux
+source venv/bin/activate
+
 pip install -r requirements.txt
 ```
+
+> **Windows note:** The `tzdata` package is included in `requirements.txt` and is required on Windows since it lacks a built-in timezone database.
 
 **3. Configure environment**
 ```bash
@@ -91,6 +103,7 @@ Fill in `.env` with your bot token, guild ID, channel IDs, and an optional [OMDB
 
 **4. Run**
 ```bash
+# If using a virtual environment, activate it first (see step 2), then:
 python main.py
 ```
 
@@ -126,3 +139,4 @@ Remove or set `DEV_MODE=false` when ready for production.
 - Python 3.10+
 - discord.py 2.x
 - aiosqlite, aiohttp, python-dotenv
+- tzdata (required on Windows)
