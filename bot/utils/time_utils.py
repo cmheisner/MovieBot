@@ -33,4 +33,5 @@ def next_movie_night_after(after: datetime) -> datetime:
 
 def format_dt_eastern(dt: datetime) -> str:
     eastern = dt.astimezone(TZ_EASTERN)
-    return eastern.strftime("%A, %B %d %Y at %-I:%M %p %Z")
+    hour = eastern.strftime("%I").lstrip("0") or "12"
+    return eastern.strftime(f"%A, %B %d %Y at {hour}:%M %p %Z")

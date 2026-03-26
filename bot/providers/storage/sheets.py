@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -27,6 +28,27 @@ TZ_COLS = ["user_id", "tz_name"]
 _MOVIE_COL = {col: idx for idx, col in enumerate(MOVIE_COLS)}
 _POLL_COL = {col: idx for idx, col in enumerate(POLL_COLS)}
 _SCHEDULE_COL = {col: idx for idx, col in enumerate(SCHEDULE_COLS)}
+
+_CACHE_TTL = 60  # seconds — direct Sheets edits are visible within this window
+
+
+class _SheetCache:
+    """Simple TTL cache for sheet data rows, keyed by sheet name."""
+
+    def __init__(self):
+        self._store: dict[str, tuple[list, float]] = {}
+
+    def get(self, name: str) -> Optional[list]:
+        entry = self._store.get(name)
+        if entry and time.monotonic() - entry[1] < _CACHE_TTL:
+            return entry[0]
+        return None
+
+    def put(self, name: str, rows: list) -> None:
+        self._store[name] = (rows, time.monotonic())
+
+    def drop(self, name: str) -> None:
+        self._store.pop(name, None)
 
 
 def _now_iso() -> str:
@@ -125,6 +147,7 @@ class GoogleSheetsStorageProvider(StorageProvider):
         self._credentials_path = credentials_path
         self._credentials_json = credentials_json
         self._ss: Optional[gspread.Spreadsheet] = None
+        self._cache = _SheetCache()
 
     # ── Init ─────────────────────────────────────────────────────────────
 
@@ -165,8 +188,13 @@ class GoogleSheetsStorageProvider(StorageProvider):
         return self._ss.worksheet(name)
 
     def _rows(self, name: str) -> list[list[str]]:
-        """Data rows only (header excluded)."""
-        return self._ws(name).get_all_values()[1:]
+        """Data rows only (header excluded). Served from cache when available."""
+        cached = self._cache.get(name)
+        if cached is not None:
+            return cached
+        rows = self._ws(name).get_all_values()[1:]
+        self._cache.put(name, rows)
+        return rows
 
     def _find_row_idx(self, ws: gspread.Worksheet, id_val: int) -> Optional[int]:
         """Return 1-based sheet row index for the row with id == id_val, or None."""
@@ -206,6 +234,7 @@ class GoogleSheetsStorageProvider(StorageProvider):
                 ],
                 value_input_option="RAW",
             )
+            self._cache.drop("movies")
             return new_id
 
         new_id = await asyncio.to_thread(_do)
@@ -272,6 +301,7 @@ class GoogleSheetsStorageProvider(StorageProvider):
             for field_name, value in update_fields.items():
                 col_idx = _MOVIE_COL[field_name] + 1  # gspread is 1-indexed
                 ws.update_cell(row_idx, col_idx, _to_str(value))
+            self._cache.drop("movies")
 
         await asyncio.to_thread(_do)
         return await self.get_movie(movie_id)
@@ -304,6 +334,8 @@ class GoogleSheetsStorageProvider(StorageProvider):
                     value_input_option="RAW",
                 )
                 entry_id += 1
+            self._cache.drop("polls")
+            self._cache.drop("poll_entries")
             return poll_id
 
         poll_id = await asyncio.to_thread(_do)
@@ -347,6 +379,7 @@ class GoogleSheetsStorageProvider(StorageProvider):
             now = _now_iso()
             ws.update_cell(row_idx, _POLL_COL["status"] + 1, "closed")
             ws.update_cell(row_idx, _POLL_COL["closed_at"] + 1, now)
+            self._cache.drop("polls")
 
         await asyncio.to_thread(_do)
         return await self.get_poll(poll_id)
@@ -371,6 +404,7 @@ class GoogleSheetsStorageProvider(StorageProvider):
                 [str(new_id), str(movie_id), _to_str(poll_id), scheduled_for.isoformat(), "", "", now],
                 value_input_option="RAW",
             )
+            self._cache.drop("schedule_entries")
             return new_id
 
         new_id = await asyncio.to_thread(_do)
@@ -421,6 +455,7 @@ class GoogleSheetsStorageProvider(StorageProvider):
             for field_name, value in update_fields.items():
                 col_idx = _SCHEDULE_COL[field_name] + 1
                 ws.update_cell(row_idx, col_idx, _to_str(value))
+            self._cache.drop("schedule_entries")
 
         await asyncio.to_thread(_do)
         return await self.get_schedule_entry(entry_id)
@@ -431,6 +466,7 @@ class GoogleSheetsStorageProvider(StorageProvider):
             row_idx = self._find_row_idx(ws, entry_id)
             if row_idx is not None:
                 ws.delete_rows(row_idx)
+                self._cache.drop("schedule_entries")
 
         await asyncio.to_thread(_do)
 
@@ -469,8 +505,10 @@ class GoogleSheetsStorageProvider(StorageProvider):
             for i, r in enumerate(all_rows[1:], start=2):
                 if r and r[0] == user_id:
                     ws.update_cell(i, 2, tz_name)
+                    self._cache.drop("user_timezones")
                     return
             ws.append_row([user_id, tz_name], value_input_option="RAW")
+            self._cache.drop("user_timezones")
 
         await asyncio.to_thread(_do)
 
