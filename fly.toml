@@ -1,0 +1,7 @@
+app = "moviebot"
+primary_region = "ord"
+
+[build]
+
+[env]
+  PYTHONUNBUFFERED = "1"

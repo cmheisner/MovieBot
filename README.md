@@ -109,6 +109,93 @@ python main.py
 
 Slash commands are synced to your guild on startup.
 
+---
+
+## Google Sheets Setup
+
+To use Google Sheets as the shared database (so the movie list is visible and editable in a spreadsheet):
+
+**1. Create a Google Cloud project and service account**
+1. Go to [console.cloud.google.com](https://console.cloud.google.com) and create a new project
+2. Enable the **Google Sheets API** for the project (APIs & Services → Library → search "Google Sheets API")
+3. Go to **APIs & Services → Credentials → Create Credentials → Service Account**
+4. Give it any name, click through to finish
+5. Open the service account, go to the **Keys** tab → Add Key → JSON — download the file
+
+**2. Share your spreadsheet with the service account**
+1. Open the downloaded JSON key and copy the `client_email` value (looks like `name@project.iam.gserviceaccount.com`)
+2. Open your Google Sheet and click **Share** — paste that email and give it **Editor** access
+
+**3. Configure `.env`**
+```
+STORAGE_BACKEND=sheets
+GOOGLE_SHEETS_ID=<the ID from your spreadsheet URL>
+GOOGLE_SERVICE_ACCOUNT_PATH=credentials.json  # path to the downloaded JSON key
+```
+
+The spreadsheet ID is the long string in the URL:
+`https://docs.google.com/spreadsheets/d/**<THIS_PART>**/edit`
+
+On first run the bot will automatically create all required tabs (`movies`, `schedule_entries`, `polls`, `poll_entries`, `user_timezones`).
+
+> **Editing directly in Sheets:** It's safe to edit `notes`, `apple_tv_url`, `image_url`, and `group_name` in the `movies` tab. Avoid editing `id`, `added_at`, `status`, or `omdb_data` — those are managed by the bot. The other tabs are internal and should not be edited manually.
+
+---
+
+## Deploying to Fly.io (Free Hosting)
+
+[Fly.io](https://fly.io) provides free persistent hosting — the bot stays online 24/7 with no cost. No credit card is required to sign up.
+
+**1. Install the Fly CLI**
+```bash
+# Windows (PowerShell)
+iwr https://fly.io/install.ps1 -useb | iex
+
+# macOS/Linux
+curl -L https://fly.io/install.sh | sh
+```
+
+**2. Sign up and log in**
+```bash
+fly auth signup   # or: fly auth login
+```
+
+**3. Launch the app** (run once from the repo root)
+```bash
+fly launch --no-deploy
+```
+When prompted, choose a unique app name and a region close to you. This creates the `fly.toml` file (already included in this repo — you can skip the prompts and just run `fly launch --no-deploy` to link it to your account).
+
+**4. Set environment variables**
+
+Paste your entire service account JSON key as a single secret so the file doesn't need to be in the repo:
+```bash
+fly secrets set \
+  DISCORD_TOKEN="your_token" \
+  GUILD_ID="123..." \
+  STASH_CHANNEL_ID="123..." \
+  GENERAL_CHANNEL_ID="123..." \
+  SCHEDULE_CHANNEL_ID="123..." \
+  STORAGE_BACKEND="sheets" \
+  GOOGLE_SHEETS_ID="your_sheet_id" \
+  GOOGLE_SERVICE_ACCOUNT_JSON="$(cat credentials.json)"
+```
+
+**5. Deploy**
+```bash
+fly deploy
+```
+
+The bot will come online and sync slash commands to your server. To view logs:
+```bash
+fly logs
+```
+
+To redeploy after pushing code changes:
+```bash
+fly deploy
+```
+
 ## Channel Setup
 
 The bot expects three channels in your server. Set their IDs in `.env`:

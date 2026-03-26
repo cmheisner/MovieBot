@@ -19,6 +19,7 @@ COGS = [
     "bot.cogs.user",
     "bot.cogs.reviews",
     "bot.cogs.seasons",
+    "bot.cogs.maintenance",
 ]
 
 
@@ -51,7 +52,15 @@ class MovieBotClient(commands.Bot):
             tree_cls=DevModeTree,
         )
         self.config = config
-        self.storage = SQLiteStorageProvider(config.db_path)
+        if config.storage_backend == "sheets":
+            from bot.providers.storage.sheets import GoogleSheetsStorageProvider
+            self.storage = GoogleSheetsStorageProvider(
+                config.google_sheets_id,
+                credentials_path=config.google_service_account_path or None,
+                credentials_json=config.google_service_account_json or None,
+            )
+        else:
+            self.storage = SQLiteStorageProvider(config.db_path)
         self.media = (
             OMDBMetadataProvider(config.omdb_api_key)
             if config.omdb_api_key
@@ -66,7 +75,11 @@ class MovieBotClient(commands.Bot):
 
     async def setup_hook(self) -> None:
         await self.storage.initialize()
-        log.info("Database initialized at %s", self.config.db_path)
+        backend = self.config.storage_backend
+        if backend == "sheets":
+            log.info("Storage initialized: Google Sheets (id=%s)", self.config.google_sheets_id)
+        else:
+            log.info("Storage initialized: SQLite at %s", self.config.db_path)
 
         for cog in COGS:
             await self.load_extension(cog)
