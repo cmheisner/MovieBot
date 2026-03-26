@@ -14,6 +14,12 @@ class BotConfig:
     schedule_channel_id: int
     omdb_api_key: str = ""
     db_path: str = "data/moviebot.db"
+    dev_mode: bool = False
+    bot_testing_channel_id: int = 0
+    storage_backend: str = "sqlite"
+    google_sheets_id: str = ""
+    google_service_account_path: str = ""
+    google_service_account_json: str = ""
 
     @classmethod
     def from_env(cls) -> "BotConfig":
@@ -31,4 +37,10 @@ class BotConfig:
             schedule_channel_id=int(require("SCHEDULE_CHANNEL_ID")),
             omdb_api_key=os.environ.get("OMDB_API_KEY", ""),
             db_path=os.environ.get("DB_PATH", "data/moviebot.db"),
+            dev_mode=os.environ.get("DEV_MODE", "").lower() in ("1", "true", "yes"),
+            bot_testing_channel_id=int(os.environ.get("BOT_TESTING_CHANNEL_ID", "0")),
+            storage_backend=os.environ.get("STORAGE_BACKEND", "sqlite"),
+            google_sheets_id=os.environ.get("GOOGLE_SHEETS_ID", ""),
+            google_service_account_path=os.environ.get("GOOGLE_SERVICE_ACCOUNT_PATH", ""),
+            google_service_account_json=os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON", ""),
         )

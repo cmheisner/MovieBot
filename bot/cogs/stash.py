@@ -9,6 +9,7 @@ from discord.ext import commands
 from bot.models.movie import MovieStatus
 from bot.utils.embeds import movie_card, stash_list_embed
 from bot.utils.movie_lookup import resolve_movie
+from bot.utils.time_utils import format_dt_eastern
 
 log = logging.getLogger(__name__)
 
@@ -75,7 +76,7 @@ class MovieSelectView(discord.ui.View):
             return
 
         embed = movie_card(movie, title_prefix="✅ Added to stash: ")
-        stash_ch = self.bot.get_channel(self.bot.config.stash_channel_id)
+        stash_ch = self.bot.get_channel(self.bot.get_active_channel_id(self.bot.config.stash_channel_id))
         if stash_ch and stash_ch != self.original_interaction.channel:
             await stash_ch.send(embed=embed)
         await interaction.edit_original_response(content=f"✅ **{movie.display_title}** added to the stash.", embed=None, view=None)
@@ -161,7 +162,7 @@ class StashCog(commands.Cog, name="Stash"):
             return
 
         embed = movie_card(movie, title_prefix="✅ Added to stash: ")
-        stash_ch = self.bot.get_channel(self.bot.config.stash_channel_id)
+        stash_ch = self.bot.get_channel(self.bot.get_active_channel_id(self.bot.config.stash_channel_id))
         if stash_ch and stash_ch != interaction.channel:
             await stash_ch.send(embed=embed)
         await interaction.followup.send(f"✅ **{movie.display_title}** added to the stash.", ephemeral=True)
@@ -275,6 +276,36 @@ class StashCog(commands.Cog, name="Stash"):
 
         await self.bot.storage.update_movie(movie.id, status=MovieStatus.SKIPPED)
         await interaction.followup.send(f"🗑️ **{movie.display_title}** removed from the stash.", ephemeral=True)
+
+    # ── /stash-archive ───────────────────────────────────────────────────
+
+    @app_commands.command(name="stash-archive", description="Browse every movie we've ever watched.")
+    @app_commands.describe(limit="How many entries to show (default 20, max 50)")
+    async def stash_archive(self, interaction: discord.Interaction, limit: int = 20):
+        await interaction.response.defer()
+        limit = max(1, min(limit, 50))
+        history = await self.bot.storage.list_watched_history(limit=limit)
+
+        embed = discord.Embed(title="📚 Watched History", color=discord.Color.dark_gray())
+        if not history:
+            embed.description = "_No movies have been marked as watched yet._"
+            await interaction.followup.send(embed=embed)
+            return
+
+        lines = []
+        for movie, scheduled_for in history:
+            rating = ""
+            if movie.omdb_data:
+                r = movie.omdb_data.get("imdbRating", "")
+                if r and r != "N/A":
+                    rating = f" ⭐{r}"
+            date_str = f" — {format_dt_eastern(scheduled_for)}" if scheduled_for else ""
+            group_str = f" `{movie.group_name}`" if movie.group_name else ""
+            lines.append(f"**{movie.display_title}**{rating}{date_str}{group_str}")
+
+        embed.description = "\n".join(lines)
+        embed.set_footer(text=f"{len(history)} movie(s) watched")
+        await interaction.followup.send(embed=embed)
 
     # ── /stash-watched ───────────────────────────────────────────────────
 

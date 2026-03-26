@@ -2,6 +2,7 @@ from __future__ import annotations
 import logging
 
 import discord
+from discord import app_commands
 from discord.ext import commands
 
 from bot.config import BotConfig
@@ -16,7 +17,28 @@ COGS = [
     "bot.cogs.schedule",
     "bot.cogs.events",
     "bot.cogs.user",
+    "bot.cogs.reviews",
+    "bot.cogs.seasons",
+    "bot.cogs.maintenance",
 ]
+
+
+class DevModeTree(app_commands.CommandTree):
+    """CommandTree subclass that gates all slash commands to bot-testing in dev mode."""
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        config = interaction.client.config
+        if (
+            config.dev_mode
+            and config.bot_testing_channel_id
+            and interaction.channel_id != config.bot_testing_channel_id
+        ):
+            await interaction.response.send_message(
+                f"🔧 Dev mode: commands only allowed in <#{config.bot_testing_channel_id}>.",
+                ephemeral=True,
+            )
+            return False
+        return True
 
 
 class MovieBotClient(commands.Bot):
@@ -27,18 +49,37 @@ class MovieBotClient(commands.Bot):
         super().__init__(
             command_prefix="!",  # slash commands are primary; prefix is fallback
             intents=intents,
+            tree_cls=DevModeTree,
         )
         self.config = config
-        self.storage = SQLiteStorageProvider(config.db_path)
+        if config.storage_backend == "sheets":
+            from bot.providers.storage.sheets import GoogleSheetsStorageProvider
+            self.storage = GoogleSheetsStorageProvider(
+                config.google_sheets_id,
+                credentials_path=config.google_service_account_path or None,
+                credentials_json=config.google_service_account_json or None,
+            )
+        else:
+            self.storage = SQLiteStorageProvider(config.db_path)
         self.media = (
             OMDBMetadataProvider(config.omdb_api_key)
             if config.omdb_api_key
             else NoOpMetadataProvider()
         )
 
+    def get_active_channel_id(self, intended_channel_id: int) -> int:
+        """In dev mode, redirect all channel sends to the bot-testing channel."""
+        if self.config.dev_mode and self.config.bot_testing_channel_id:
+            return self.config.bot_testing_channel_id
+        return intended_channel_id
+
     async def setup_hook(self) -> None:
         await self.storage.initialize()
-        log.info("Database initialized at %s", self.config.db_path)
+        backend = self.config.storage_backend
+        if backend == "sheets":
+            log.info("Storage initialized: Google Sheets (id=%s)", self.config.google_sheets_id)
+        else:
+            log.info("Storage initialized: SQLite at %s", self.config.db_path)
 
         for cog in COGS:
             await self.load_extension(cog)

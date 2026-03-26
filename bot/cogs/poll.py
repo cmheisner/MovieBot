@@ -45,7 +45,7 @@ class PollCog(commands.Cog, name="Poll"):
         poll = await self.bot.storage.get_latest_open_poll()
         if poll and poll.closes_at and datetime.now(timezone.utc) >= poll.closes_at:
             log.info("Auto-closing poll id=%d", poll.id)
-            general_ch = self.bot.get_channel(self.bot.config.general_channel_id)
+            general_ch = self.bot.get_channel(self.bot.get_active_channel_id(self.bot.config.general_channel_id))
             await self._do_close_poll(poll, general_ch)
 
     @auto_close_loop.before_loop
@@ -101,8 +101,8 @@ class PollCog(commands.Cog, name="Poll"):
             else None
         )
 
-        # Send poll message to #general
-        general_ch = self.bot.get_channel(self.bot.config.general_channel_id)
+        # Send poll message to #general (or bot-testing in dev mode)
+        general_ch = self.bot.get_channel(self.bot.get_active_channel_id(self.bot.config.general_channel_id))
         if not general_ch:
             await interaction.followup.send("⚠️ Could not find the general channel.", ephemeral=True)
             return

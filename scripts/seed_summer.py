@@ -1,0 +1,115 @@
+"""
+Seed script — bulk-add This Summer movies to the stash.
+
+Usage (from the repo root):
+    python scripts/seed_summer.py
+"""
+from __future__ import annotations
+
+import asyncio
+import json
+import os
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+import aiohttp
+import aiosqlite
+from dotenv import load_dotenv
+
+load_dotenv()
+
+DB_PATH  = os.environ.get("DB_PATH", "data/moviebot.db")
+OMDB_KEY = os.environ.get("OMDB_API_KEY", "")
+GROUP    = "This Summer"
+ADDED_BY = "Seed Script"
+ADDED_BY_ID = "0"
+
+SUMMER_MOVIES: list[tuple[str, int]] = [
+    ("Falling Down", 1993),
+    ("American History X", 1998),
+    ("Fight Club", 1999),
+    ("Furiosa: A Mad Max Saga", 2024),
+    ("Tremors", 1990),
+    ("Tremors II: Aftershocks", 1996),
+    ("Tremors 3: Back to Perfection", 2001),
+    ("Tremors 4: The Legend Begins", 2004),
+    ("Tremors 5: Bloodlines", 2015),
+    ("Tremors: A Cold Day in Hell", 2018),
+    ("Tremors: Shrieker Island", 2020),
+    ("The Fly", 1986),
+    ("The Fly II", 1989),
+    ("Talladega Nights: The Ballad of Ricky Bobby", 2006),
+    ("Joe Dirt", 2001),
+    ("Snack Shack", 2024),
+]
+
+
+async def fetch_omdb(session: aiohttp.ClientSession, title: str, year: int) -> dict | None:
+    if not OMDB_KEY:
+        return None
+    params = {"apikey": OMDB_KEY, "t": title, "y": year, "type": "movie"}
+    try:
+        async with session.get("https://www.omdbapi.com/", params=params,
+                               timeout=aiohttp.ClientTimeout(total=8)) as r:
+            if r.status != 200:
+                return None
+            data = await r.json()
+            return data if data.get("Response") == "True" else None
+    except Exception as exc:
+        print(f"  ⚠️  OMDB error for '{title}': {exc}")
+        return None
+
+
+async def main() -> None:
+    os.makedirs(os.path.dirname(DB_PATH) or ".", exist_ok=True)
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+
+        async with aiohttp.ClientSession() as session:
+            added = skipped = 0
+            for search_title, year in SUMMER_MOVIES:
+                omdb = await fetch_omdb(session, search_title, year)
+                title = omdb["Title"] if omdb else search_title
+                year  = int(omdb["Year"][:4]) if omdb else year
+
+                async with db.execute(
+                    "SELECT id, group_name FROM movies WHERE LOWER(title) = LOWER(?) AND year = ?",
+                    (title, year),
+                ) as cur:
+                    existing = await cur.fetchone()
+
+                if existing:
+                    if not existing["group_name"]:
+                        await db.execute(
+                            "UPDATE movies SET group_name = ? WHERE id = ?",
+                            (GROUP, existing["id"]),
+                        )
+                        await db.commit()
+                    print(f"  ↩️  Already exists: {title} ({year}) — group set to '{GROUP}'")
+                    skipped += 1
+                    continue
+
+                omdb_json = json.dumps(omdb) if omdb else None
+                now = datetime.now(timezone.utc).isoformat()
+                await db.execute(
+                    """
+                    INSERT INTO movies
+                        (title, year, added_by, added_by_id, added_at, status, omdb_data, group_name)
+                    VALUES (?, ?, ?, ?, ?, 'stash', ?, ?)
+                    """,
+                    (title, year, ADDED_BY, ADDED_BY_ID, now, omdb_json, GROUP),
+                )
+                await db.commit()
+                rating = omdb.get("imdbRating", "?") if omdb else "no OMDB"
+                print(f"  ✅  Added: {title} ({year})  ⭐{rating}")
+                added += 1
+
+    print(f"\nDone — {added} added, {skipped} already existed.")
+
+
+if __name__ == "__main__":
+    asyncio.run(main())

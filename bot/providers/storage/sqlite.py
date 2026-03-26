@@ -363,6 +363,33 @@ class SQLiteStorageProvider(StorageProvider):
         await self._db.execute("DELETE FROM schedule_entries WHERE id = ?", (entry_id,))
         await self._db.commit()
 
+    async def get_schedule_entry_for_movie(self, movie_id: int) -> Optional[ScheduleEntry]:
+        async with self._db.execute(
+            "SELECT * FROM schedule_entries WHERE movie_id = ?", (movie_id,)
+        ) as cur:
+            row = await cur.fetchone()
+        return _row_to_entry(row) if row else None
+
+    async def list_watched_history(self, limit: int = 50) -> list[tuple[Movie, Optional[datetime]]]:
+        async with self._db.execute(
+            """
+            SELECT m.*, se.scheduled_for AS sched_date
+            FROM movies m
+            LEFT JOIN schedule_entries se ON se.movie_id = m.id
+            WHERE m.status = 'watched'
+            ORDER BY COALESCE(se.scheduled_for, m.added_at) DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ) as cur:
+            rows = await cur.fetchall()
+        result = []
+        for row in rows:
+            movie = _row_to_movie(row)
+            sched = _parse_dt(row["sched_date"]) if row["sched_date"] else None
+            result.append((movie, sched))
+        return result
+
     # ── User Preferences ─────────────────────────────────────────────────
 
     async def set_user_timezone(self, user_id: str, tz_name: str) -> None:
