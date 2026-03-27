@@ -15,8 +15,6 @@ COGS = [
     "bot.cogs.stash",
     "bot.cogs.poll",
     "bot.cogs.schedule",
-    "bot.cogs.events",
-    "bot.cogs.user",
     "bot.cogs.reviews",
     "bot.cogs.seasons",
     "bot.cogs.maintenance",

@@ -22,10 +22,12 @@ class SeasonsCog(commands.Cog, name="Seasons"):
     def __init__(self, bot):
         self.bot = bot
 
-    # ── /season-list ─────────────────────────────────────────────────────
+    season = app_commands.Group(name="season", description="Manage seasonal movie collections.")
 
-    @app_commands.command(
-        name="season-list",
+    # ── /season list ──────────────────────────────────────────────────────
+
+    @season.command(
+        name="list",
         description="List movies in a seasonal collection.",
     )
     @app_commands.describe(
@@ -52,13 +54,13 @@ class SeasonsCog(commands.Cog, name="Seasons"):
         embed = stash_list_embed(movies, status_label=season)
         embed.title = f"🗓️ {season} — {status.capitalize()}"
         if not movies:
-            embed.description = f"_No movies tagged as **{season}** yet._\nUse `/season-tag` to add some!"
+            embed.description = f"_No movies tagged as **{season}** yet._\nUse `/season tag` to add some!"
         await interaction.followup.send(embed=embed)
 
-    # ── /season-tag ──────────────────────────────────────────────────────
+    # ── /season tag ───────────────────────────────────────────────────────
 
-    @app_commands.command(
-        name="season-tag",
+    @season.command(
+        name="tag",
         description="Tag a movie as part of a seasonal collection.",
     )
     @app_commands.describe(
@@ -84,10 +86,10 @@ class SeasonsCog(commands.Cog, name="Seasons"):
             ephemeral=True,
         )
 
-    # ── /season-overview ─────────────────────────────────────────────────
+    # ── /season overview ──────────────────────────────────────────────────
 
-    @app_commands.command(
-        name="season-overview",
+    @season.command(
+        name="overview",
         description="Show a summary of all seasonal collections.",
     )
     async def season_overview(self, interaction: discord.Interaction):
@@ -106,8 +108,8 @@ class SeasonsCog(commands.Cog, name="Seasons"):
                 g["other"] += 1
 
         # Always show all four defined seasons, even if empty
-        for season in [c.value for c in SEASON_CHOICES]:
-            groups.setdefault(season, {"stash": 0, "scheduled": 0, "watched": 0, "other": 0})
+        for s in [c.value for c in SEASON_CHOICES]:
+            groups.setdefault(s, {"stash": 0, "scheduled": 0, "watched": 0, "other": 0})
 
         embed = discord.Embed(title="🗓️ Seasonal Collections", color=discord.Color.blurple())
 
