@@ -18,6 +18,7 @@ COGS = [
     "bot.cogs.reviews",
     "bot.cogs.seasons",
     "bot.cogs.maintenance",
+    "bot.cogs.help",
 ]
 
 
