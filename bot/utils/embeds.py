@@ -1,8 +1,11 @@
 from __future__ import annotations
+import calendar as _calendar
+from datetime import datetime, timezone as dt_timezone
 from typing import Optional
 
 import discord
 
+from bot.constants import TZ_EASTERN
 from bot.models.movie import Movie
 from bot.models.poll import Poll, PollEntry
 from bot.models.schedule_entry import ScheduleEntry
@@ -106,6 +109,74 @@ def poll_embed(
             )
     if closes_at_str:
         embed.set_footer(text=f"Voting closes: {closes_at_str}")
+    return embed
+
+
+def build_calendar_embed(year: int, month: int, entries: list, movies_by_id: dict) -> discord.Embed:
+    """Build an ANSI calendar embed for the given month.
+
+    entries must already be filtered to the target month/year.
+    movies_by_id maps movie_id → Movie for those entries.
+    """
+    def _to_eastern(dt: datetime) -> datetime:
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=dt_timezone.utc)
+        return dt.astimezone(TZ_EASTERN)
+
+    movie_days: dict[int, str] = {}
+    for e in sorted(entries, key=lambda x: x.scheduled_for):
+        day = _to_eastern(e.scheduled_for).day
+        m = movies_by_id.get(e.movie_id)
+        if m:
+            movie_days[day] = m.display_title
+
+    YELLOW_BOLD = "\x1b[1;33m"
+    RESET = "\x1b[0m"
+
+    cal = _calendar.monthcalendar(year, month)
+    header = "Mo Tu We Th Fr Sa Su"
+    rows = [header]
+    for week in cal:
+        cells = []
+        for day in week:
+            if day == 0:
+                cells.append("  ")
+            elif day in movie_days:
+                cells.append(f"{YELLOW_BOLD}{day:2d}{RESET}")
+            else:
+                cells.append(f"{day:2d}")
+        rows.append(" ".join(cells))
+
+    month_name = _calendar.month_name[month]
+    grid = "\n".join(rows)
+    code_block = f"```ansi\n{month_name} {year}\n\n{grid}\n```"
+
+    if movie_days:
+        legend_lines = []
+        for e in sorted(entries, key=lambda x: x.scheduled_for):
+            day = _to_eastern(e.scheduled_for).day
+            if day in movie_days:
+                m = movies_by_id.get(e.movie_id)
+                title = m.display_title if m else f"Movie #{e.movie_id}"
+                rating = ""
+                if m and m.omdb_data:
+                    r = m.omdb_data.get("imdbRating", "")
+                    if r and r != "N/A":
+                        rating = f" ⭐{r}"
+                _e = _to_eastern(e.scheduled_for)
+                _day = _e.strftime("%d").lstrip("0") or "1"
+                date_str = _e.strftime(f"%a %b {_day}")
+                legend_lines.append(f"🎬 {date_str} — **{title}**{rating}")
+        legend = "\n".join(legend_lines)
+    else:
+        legend = "_No movies scheduled this month._"
+
+    embed = discord.Embed(
+        title=f"📅 {month_name} {year}",
+        description=code_block + "\n" + legend,
+        color=discord.Color.blurple(),
+    )
+    embed.set_footer(text="Movie nights: Wed & Thu at 10:30 PM ET · Highlighted in yellow")
     return embed
 
 

@@ -1,5 +1,4 @@
 from __future__ import annotations
-import calendar
 import logging
 from datetime import datetime, timezone as dt_timezone, timedelta
 
@@ -9,7 +8,7 @@ from discord.ext import commands
 
 from bot.constants import TZ_EASTERN, MOVIE_NIGHT_HOUR, MOVIE_NIGHT_MINUTE
 from bot.models.movie import MovieStatus
-from bot.utils.embeds import schedule_embed
+from bot.utils.embeds import schedule_embed, build_calendar_embed
 from bot.utils.movie_lookup import resolve_movie
 from bot.utils.time_utils import next_movie_night, format_dt_eastern
 
@@ -116,6 +115,9 @@ class ScheduleCog(commands.Cog, name="Schedule"):
             )
 
         await self.bot.storage.update_movie(movie.id, status=MovieStatus.SCHEDULED)
+        maintenance = self.bot.get_cog("Maintenance")
+        if maintenance:
+            await maintenance.post_schedule_announcement(movie, scheduled_for)
         eastern_str = format_dt_eastern(scheduled_for)
         if rescheduled_from:
             old_str = format_dt_eastern(rescheduled_from)
@@ -329,60 +331,13 @@ class ScheduleCog(commands.Cog, name="Schedule"):
             and _to_eastern(e.scheduled_for).year == year
         ]
 
-        movie_days: dict[int, str] = {}
-        for e in sorted(month_entries, key=lambda x: x.scheduled_for):
-            day = _to_eastern(e.scheduled_for).day
+        movies_by_id = {}
+        for e in month_entries:
             m = await self.bot.storage.get_movie(e.movie_id)
             if m:
-                movie_days[day] = m.display_title
+                movies_by_id[e.movie_id] = m
 
-        YELLOW_BOLD = "\x1b[1;33m"
-        RESET = "\x1b[0m"
-
-        cal = calendar.monthcalendar(year, month)
-        header = "Mo Tu We Th Fr Sa Su"
-        rows = [header]
-        for week in cal:
-            cells = []
-            for day in week:
-                if day == 0:
-                    cells.append("  ")
-                elif day in movie_days:
-                    cells.append(f"{YELLOW_BOLD}{day:2d}{RESET}")
-                else:
-                    cells.append(f"{day:2d}")
-            rows.append(" ".join(cells))
-
-        month_name = calendar.month_name[month]
-        grid = "\n".join(rows)
-        code_block = f"```ansi\n{month_name} {year}\n\n{grid}\n```"
-
-        if movie_days:
-            legend_lines = []
-            for e in sorted(month_entries, key=lambda x: x.scheduled_for):
-                day = _to_eastern(e.scheduled_for).day
-                if day in movie_days:
-                    m = await self.bot.storage.get_movie(e.movie_id)
-                    title = m.display_title if m else f"Movie #{e.movie_id}"
-                    rating = ""
-                    if m and m.omdb_data:
-                        r = m.omdb_data.get("imdbRating", "")
-                        if r and r != "N/A":
-                            rating = f" ⭐{r}"
-                    _e = _to_eastern(e.scheduled_for)
-                    _day = _e.strftime("%d").lstrip("0") or "1"
-                    date_str = _e.strftime(f"%a %b {_day}")
-                    legend_lines.append(f"🎬 {date_str} — **{title}**{rating}")
-            legend = "\n".join(legend_lines)
-        else:
-            legend = "_No movies scheduled this month. Use `/schedule add` to add one._"
-
-        embed = discord.Embed(
-            title=f"📅 {month_name} {year}",
-            description=code_block + "\n" + legend,
-            color=discord.Color.blurple(),
-        )
-        embed.set_footer(text="Movie nights: Wed & Thu at 10:30 PM ET · Highlighted in yellow")
+        embed = build_calendar_embed(year, month, month_entries, movies_by_id)
         await interaction.followup.send(embed=embed)
 
 

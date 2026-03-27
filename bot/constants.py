@@ -1,6 +1,7 @@
 import zoneinfo
 
 TZ_EASTERN = zoneinfo.ZoneInfo("America/New_York")
+TZ_PACIFIC = zoneinfo.ZoneInfo("America/Los_Angeles")
 
 # Movie night days: 2=Wednesday, 3=Thursday
 MOVIE_NIGHT_WEEKDAYS = (2, 3)

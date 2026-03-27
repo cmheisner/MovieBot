@@ -1,7 +1,7 @@
 from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
-from bot.constants import TZ_EASTERN, MOVIE_NIGHT_WEEKDAYS, MOVIE_NIGHT_HOUR, MOVIE_NIGHT_MINUTE
+from bot.constants import TZ_EASTERN, TZ_PACIFIC, MOVIE_NIGHT_WEEKDAYS, MOVIE_NIGHT_HOUR, MOVIE_NIGHT_MINUTE
 
 
 def next_movie_night(after: datetime | None = None) -> datetime:
@@ -33,5 +33,9 @@ def next_movie_night_after(after: datetime) -> datetime:
 
 def format_dt_eastern(dt: datetime) -> str:
     eastern = dt.astimezone(TZ_EASTERN)
-    hour = eastern.strftime("%I").lstrip("0") or "12"
-    return eastern.strftime(f"%A, %B %d %Y at {hour}:%M %p %Z")
+    pacific = dt.astimezone(TZ_PACIFIC)
+    et_hour = eastern.strftime("%I").lstrip("0") or "12"
+    pt_hour = pacific.strftime("%I").lstrip("0") or "12"
+    et_str = eastern.strftime(f"{et_hour}:%M %p %Z")
+    pt_str = pacific.strftime(f"{pt_hour}:%M %p %Z")
+    return eastern.strftime(f"%A, %B %d %Y") + f" at {et_str} / {pt_str}"

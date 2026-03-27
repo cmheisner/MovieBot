@@ -61,7 +61,8 @@ class HelpCog(commands.Cog, name="Help"):
             value=(
                 "`/poll create` — Create a vote from stash movies (up to 4)\n"
                 "`/poll status` — See current vote tallies\n"
-                "`/poll close` — Close voting and schedule the winner"
+                "`/poll close` — Close voting and schedule the winner\n"
+                "`/poll cancel` — Cancel the poll, return all movies to stash"
             ),
             inline=False,
         )
@@ -69,6 +70,12 @@ class HelpCog(commands.Cog, name="Help"):
         embed.add_field(
             name="💩 Reviews",
             value="`/reviews` — Post the worst audience reviews for a movie",
+            inline=False,
+        )
+
+        embed.add_field(
+            name="✅ Quick Actions",
+            value="`/watched` — Mark a movie as watched",
             inline=False,
         )
 

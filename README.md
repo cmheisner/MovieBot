@@ -5,69 +5,88 @@ A Discord bot for managing movie nights — from suggestions to scheduling to ev
 ## Features
 
 - **Stash** — Add and browse candidate movies with metadata (title, year, poster, IMDB info via OMDB)
-- **Voting** — Create reaction-based polls from the stash; auto-closes after a configurable window
-- **Schedule** — Winners are automatically slotted into the next Wednesday or Thursday at 10:30 PM Eastern
-- **Events** — Creates Discord Scheduled Events with movie artwork pulled from Apple TV, a custom URL, or OMDB
+- **Seasons** — Organize movies into seasonal collections (This Winter, This Spring, etc.)
+- **Voting** — Create polls from the stash; close the poll to auto-schedule the winner
+- **Schedule** — Winners are slotted into the next Wednesday or Thursday at 10:30 PM Eastern / 7:30 PM Pacific
+- **#schedule channel** — Automatically refreshed daily with the next upcoming movies (with posters) and a monthly calendar
+- **Discord Events** — Auto-created for movies within 7 days with artwork from Apple TV or OMDB; auto-removed when outside the window or after a movie is watched
+- **#news announcements** — Genre role pings when a movie is scheduled and 30-minute reminders before movie night
+- **Reviews** — Posts the worst audience reviews for a movie from Metacritic
 
 ## Commands
 
-### Stash
+Use `/help` in Discord for a quick in-bot reference.
+
+### 🎬 Stash
 
 | Command | Parameters | Description |
 |---|---|---|
-| `/stash-add` | `title` *(required)*, `year`, `notes`, `apple_tv_url`, `image_url`, `group` | Add a movie to the stash. Searches OMDB for metadata; if multiple matches are found, prompts you to pick the right one. Posts a confirmation to the stash channel. `group` assigns the movie to a seasonal label (e.g. `This Spring - 2026`). |
-| `/stash-list` | `status` *(default: Stash)*, `group` | List movies filtered by status. Choices: **Stash** (candidates), **Nominated** (in a poll), **Scheduled**, **Watched**, **All**. When movies have groups assigned, the list is displayed with section headers. Use `group` to filter to a single group. |
-| `/stash-info` | `title` *(required)*, `year` | Show a detailed card for a movie — title, year, OMDB data, poster, and any notes. |
-| `/stash-edit` | `title` *(required)*, `year`, `notes`, `apple_tv_url`, `image_url`, `group` | Edit a movie's notes, Apple TV URL, image, or group. Only the user who added the movie (or an admin) can edit it. |
-| `/stash-remove` | `title` *(required)*, `year` | Remove a movie from the stash (marks it as skipped). Only the original adder or an admin can remove it. |
-| `/stash-watched` | `title` *(required)*, `year` | Mark a movie as watched and update its status. |
-| `/stash-archive` | `limit` *(default: 20, max 50)* | Browse all movies ever watched, sorted newest first, with their watch date and IMDB rating. |
+| `/stash add` | `title` *(required)*, `year`, `notes`, `season` | Add a movie to the stash. Searches OMDB for metadata; if multiple matches are found, prompts you to pick the right one. |
+| `/stash list` | `status` *(default: Stash)*, `season` | List movies filtered by status and/or season. Status choices: **Stash**, **Nominated**, **Scheduled**, **Watched**, **All**. |
+| `/stash info` | `title` *(required)*, `year` | Show a detailed card for a movie — title, year, OMDB data, poster, and notes. |
+| `/stash edit` | `title` *(required)*, `year`, `notes`, `season` | Edit a movie's notes or season. Only the user who added it (or an admin) can edit. |
+| `/stash remove` | `title` *(required)*, `year` | Remove a movie from the stash. Only the original adder or an admin can remove it. |
+| `/stash watched` | `title` *(required)*, `year` | Mark a movie as watched and clean up its Discord event. |
+| `/stash archive` | `limit` *(default: 20, max 50)* | Browse all movies ever watched, sorted newest first, with watch date and IMDB rating. |
 
-### Voting
-
-| Command | Parameters | Description |
-|---|---|---|
-| `/poll-create` | `movie_ids` *(required, comma-separated)*, `duration_hours` *(default: 24)* | Start a reaction-based poll in the general channel from stash movie IDs. Nominated movies move to **Nominated** status; the poll auto-closes after the specified duration. |
-| `/poll-status` | `poll_id` *(optional, defaults to active poll)* | Show live vote tallies for the current or specified poll. |
-| `/poll-close` | `poll_id` *(optional, defaults to active poll)* | Close voting, tally reactions, and schedule the winner. Ties are broken by earliest addition date. The winner moves to **Scheduled**; all other nominees return to **Stash**. |
-
-### Schedule
+### 🗓️ Season
 
 | Command | Parameters | Description |
 |---|---|---|
-| `/schedule-list` | `limit` *(default: 5)* | Show upcoming scheduled movies with their dates. |
-| `/schedule-history` | `limit` *(default: 10)* | Show the full schedule — both past and upcoming entries. |
-| `/schedule-add` | `title` *(required)*, `date` *(YYYY-MM-DD)*, `time` *(HH:MM)*, `timezone` | Manually schedule a movie, bypassing a poll. Defaults to the next movie night (Wednesday or Thursday at 10:30 PM Eastern) if no date is given. `time` is interpreted in the user's saved timezone (set via `/set-timezone`) or the inline `timezone` parameter — which is also saved for future use. |
-| `/schedule-remove` | `schedule_id` *(required)* | Remove a schedule entry. Deletes any linked Discord event and returns the movie to **Stash** status. |
-| `/calendar` | `month` *(1–12, default: current)*, `year` *(default: current)* | Show a month-view calendar with movie nights highlighted in yellow. Scheduled movies are listed below the grid with dates and IMDB ratings. |
-| `/schedule-reschedule` | `movie`, `new_date` *(YYYY-MM-DD)*, `swap_with` | Move a scheduled movie to a new date and automatically shift all subsequent entries by one week. All three params are optional — omit `movie` to target the next upcoming movie, omit `new_date` to push exactly one week forward, and use `swap_with` to insert a stash movie into the vacated slot. Any linked Discord events for affected entries are deleted automatically (re-create them with `/event-create`). |
+| `/season list` | `season` *(default: This Winter)*, `status` | List movies in a seasonal collection. |
+| `/season tag` | `title` *(required)*, `season` *(required)*, `year` | Tag a movie as part of a seasonal collection. |
+| `/season overview` | — | Summary of all seasonal collections with watched/scheduled/stash counts. |
 
-### Seasons
+### 📅 Schedule
 
 | Command | Parameters | Description |
 |---|---|---|
-| `/season-list` | `season` *(default: This Winter)*, `status` *(default: all)* | List movies in a seasonal collection. Choices: **This Winter**, **This Spring**, **This Summer**, **This Fall**. Filter by status to see just what's watched, scheduled, or still in the stash. |
-| `/season-tag` | `title` *(required)*, `season` *(required)*, `year` | Tag a movie as part of a seasonal collection. |
-| `/season-overview` | — | Show a summary of all seasonal collections with watched/scheduled/stash counts. |
+| `/schedule list` | `limit` *(default: 5)* | Show upcoming scheduled movies with their dates. |
+| `/schedule history` | `limit` *(default: 10)* | Show the full schedule — both past and upcoming. |
+| `/schedule add` | `title` *(required)*, `date` *(YYYY-MM-DD)*, `time` *(HH:MM)* | Manually schedule a movie. Defaults to the next movie night (Wed or Thu at 10:30 PM ET) if no date is given. Triggers a #news announcement and refreshes #schedule. |
+| `/schedule remove` | `title` *(required)*, `year` | Remove a schedule entry. Deletes any linked Discord event and returns the movie to **Stash**. |
+| `/schedule reschedule` | `movie`, `new_date` *(YYYY-MM-DD)*, `swap_with` | Move a movie to a new date and shift all subsequent entries by one week. All params are optional. |
+| `/schedule calendar` | `month` *(1–12)*, `year` | Show a month-view calendar with movie nights highlighted. |
 
-### Reviews
-
-| Command | Parameters | Description |
-|---|---|---|
-| `/reviews` | `title`, `count` *(default: 3, max 5)* | Post the lowest-rated user reviews for a movie via Metacritic. Defaults to the next scheduled movie if no title is given. Great to run at the start of movie night. Posts to the general channel. |
-
-### User Preferences
+### 🗳️ Poll
 
 | Command | Parameters | Description |
 |---|---|---|
-| `/set-timezone` | `timezone` *(required, autocomplete)* | Save your local timezone. Used by `/schedule-add` to interpret times you enter in your local zone rather than Eastern. Autocomplete lists common timezones — start typing a city or region name to filter. |
+| `/poll create` | `movie_1` *(required)*, `movie_2`, `movie_3`, `movie_4`, `duration_hours` *(default: 24)* | Start a poll in the general channel. Up to 4 stash movies. Autocomplete searches the stash as you type. |
+| `/poll status` | — | Show live vote tallies for the active poll. |
+| `/poll close` | — | Close voting, tally reactions, and schedule the winner. The winner moves to **Scheduled**; all other nominees return to **Stash**. Triggers a #news announcement. |
+| `/poll cancel` | — | Cancel the active poll and return all nominated movies to **Stash**. |
 
-### Events
+### 💩 Reviews
 
 | Command | Parameters | Description |
 |---|---|---|
-| `/event-create` | `schedule_id` *(optional, defaults to next scheduled movie)* | Create a Discord Scheduled Event for a movie. Pulls artwork from Apple TV or the OMDB poster. The event description includes plot, rating, genre, Apple TV link, and notes. Safe to re-run — won't create duplicates. |
-| `/event-delete` | `schedule_id` *(required)* | Delete the Discord event for a schedule entry. The event can be re-created later with `/event-create`. |
+| `/reviews` | `title`, `count` *(default: 3, max 5)* | Post the lowest-rated audience reviews for a movie via Metacritic. Defaults to the next scheduled movie if no title is given. |
+
+### ✅ Quick Actions
+
+| Command | Parameters | Description |
+|---|---|---|
+| `/watched` | `title` *(required)*, `year` | Mark a movie as watched and clean up its Discord event. Shortcut for `/stash watched`. |
+| `/help` | — | Show all available commands. |
+
+---
+
+## Automated Features
+
+The bot runs several background tasks without any manual intervention:
+
+| Task | When | What it does |
+|---|---|---|
+| **#schedule refresh** | Daily 9 AM ET + every restart + after any schedule change | Clears old bot messages in #schedule and reposts the next 3 upcoming movies (with posters) and a monthly calendar |
+| **Discord events** | Daily noon ET + every restart | Creates Discord Scheduled Events for movies within 7 days; deletes events for movies outside the window or already watched |
+| **Auto-watched** | Daily 2 AM ET | Marks any scheduled movies whose date has passed as **Watched** and deletes their Discord events |
+| **Movie night reminder** | Daily 10 PM ET | Pings genre roles in #news 30 minutes before movie night (10:30 PM ET) |
+| **#news announcement** | On poll close or `/schedule add` | Pings matching genre roles in #news with the movie title and scheduled date |
+| **Duplicate scan** | Daily 6 AM ET | Marks duplicate stash entries as skipped |
+| **Integrity check** | Every restart (5s delay) | Resets nominated movies with no open poll, cleans up orphaned schedule entries |
+
+---
 
 ## Setup
 
@@ -76,11 +95,16 @@ A Discord bot for managing movie nights — from suggestions to scheduling to ev
 - Server Members (for reaction tracking)
 - Guild Scheduled Events
 
-The bot role also needs the **Manage Events** permission in your server to create Discord Scheduled Events.
+The bot role needs **Manage Events** permission to create Discord Scheduled Events, and **Send Messages** in all configured channels.
+
+**Invite URL format:**
+```
+https://discord.com/oauth2/authorize?client_id=YOUR_CLIENT_ID&permissions=8590019648&scope=bot+applications.commands
+```
+*(The `bot+applications.commands` scope is required — `applications.commands` alone will not add the bot to the member list.)*
 
 **2. Install dependencies**
 
-It's recommended to use a virtual environment:
 ```bash
 python -m venv venv
 
@@ -93,21 +117,56 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-> **Windows note:** The `tzdata` package is included in `requirements.txt` and is required on Windows since it lacks a built-in timezone database.
+> **Windows note:** The `tzdata` package is required on Windows since it lacks a built-in timezone database.
 
 **3. Configure environment**
+
 ```bash
 cp .env.example .env
 ```
-Fill in `.env` with your bot token, guild ID, channel IDs, and an optional [OMDB API key](https://www.omdbapi.com/apikey.aspx).
+
+Fill in `.env`:
+
+```
+DISCORD_TOKEN=your_bot_token
+GUILD_ID=your_server_id
+STASH_CHANNEL_ID=channel_id
+GENERAL_CHANNEL_ID=channel_id
+SCHEDULE_CHANNEL_ID=channel_id
+NEWS_CHANNEL_ID=channel_id
+THEATRE_CHANNEL_ID=channel_id   # voice channel used for Discord Scheduled Events
+OMDB_API_KEY=your_key           # optional but recommended — free at omdbapi.com
+```
 
 **4. Run**
+
 ```bash
-# If using a virtual environment, activate it first (see step 2), then:
 python main.py
 ```
 
 Slash commands are synced to your guild on startup.
+
+---
+
+## Channel Setup
+
+| Variable | Purpose |
+|---|---|
+| `STASH_CHANNEL_ID` | Where new movie additions are announced |
+| `GENERAL_CHANNEL_ID` | Where voting polls are posted |
+| `SCHEDULE_CHANNEL_ID` | Automatically maintained — daily schedule post with posters and calendar |
+| `NEWS_CHANNEL_ID` | Genre role pings when movies are scheduled, and 30-min movie night reminders |
+| `THEATRE_CHANNEL_ID` | Voice channel used as the location for Discord Scheduled Events |
+
+---
+
+## Genre Role Pings
+
+When a movie is scheduled (via poll close or `/schedule add`), the bot looks up the movie's genres from OMDB (e.g. "Action, Thriller") and pings any Discord roles whose name matches a genre. To use this:
+
+1. Create roles in your server named after genres (e.g. **Action**, **Comedy**, **Horror**)
+2. Let members self-assign the genres they want to be notified about
+3. The bot will automatically mention matching roles in #news
 
 ---
 
@@ -117,34 +176,39 @@ To use Google Sheets as the shared database (so the movie list is visible and ed
 
 **1. Create a Google Cloud project and service account**
 1. Go to [console.cloud.google.com](https://console.cloud.google.com) and create a new project
-2. Enable the **Google Sheets API** for the project (APIs & Services → Library → search "Google Sheets API")
+2. Enable the **Google Sheets API** (APIs & Services → Library)
 3. Go to **APIs & Services → Credentials → Create Credentials → Service Account**
-4. Give it any name, click through to finish
-5. Open the service account, go to the **Keys** tab → Add Key → JSON — download the file
+4. Open the service account → **Keys** tab → Add Key → JSON — download the file
 
 **2. Share your spreadsheet with the service account**
-1. Open the downloaded JSON key and copy the `client_email` value (looks like `name@project.iam.gserviceaccount.com`)
-2. Open your Google Sheet and click **Share** — paste that email and give it **Editor** access
+1. Copy the `client_email` from the downloaded JSON (looks like `name@project.iam.gserviceaccount.com`)
+2. Share your Google Sheet with that email as **Editor**
 
 **3. Configure `.env`**
 ```
 STORAGE_BACKEND=sheets
 GOOGLE_SHEETS_ID=<the ID from your spreadsheet URL>
-GOOGLE_SERVICE_ACCOUNT_PATH=credentials.json  # path to the downloaded JSON key
+GOOGLE_SERVICE_ACCOUNT_PATH=credentials.json
 ```
 
-The spreadsheet ID is the long string in the URL:
-`https://docs.google.com/spreadsheets/d/**<THIS_PART>**/edit`
+On first run the bot automatically creates all required tabs (`movies`, `schedule_entries`, `polls`, `poll_entries`, `user_timezones`).
 
-On first run the bot will automatically create all required tabs (`movies`, `schedule_entries`, `polls`, `poll_entries`, `user_timezones`).
+> **Editing directly in Sheets:** It's safe to edit `notes` and `group_name` in the `movies` tab. Avoid editing `id`, `status`, `omdb_data`, or any column in the other tabs.
 
-> **Editing directly in Sheets:** It's safe to edit `notes`, `apple_tv_url`, `image_url`, and `group_name` in the `movies` tab. Avoid editing `id`, `added_at`, `status`, or `omdb_data` — those are managed by the bot. The other tabs are internal and should not be edited manually.
+---
+
+## Dev Mode
+
+```
+DEV_MODE=true
+BOT_TESTING_CHANNEL_ID=your_test_channel_id
+```
+
+When `DEV_MODE=true`, all slash commands are rejected (ephemeral error) if run outside the bot-testing channel, and all channel posts are redirected there. Automated tasks (schedule refresh, events, reminders) always post to their real channels regardless of dev mode.
 
 ---
 
 ## Deploying to Fly.io (Free Hosting)
-
-[Fly.io](https://fly.io) provides free persistent hosting — the bot stays online 24/7 with no cost. No credit card is required to sign up.
 
 **1. Install the Fly CLI**
 ```bash
@@ -160,15 +224,12 @@ curl -L https://fly.io/install.sh | sh
 fly auth signup   # or: fly auth login
 ```
 
-**3. Launch the app** (run once from the repo root)
+**3. Launch the app**
 ```bash
 fly launch --no-deploy
 ```
-When prompted, choose a unique app name and a region close to you. This creates the `fly.toml` file (already included in this repo — you can skip the prompts and just run `fly launch --no-deploy` to link it to your account).
 
 **4. Set environment variables**
-
-Paste your entire service account JSON key as a single secret so the file doesn't need to be in the repo:
 ```bash
 fly secrets set \
   DISCORD_TOKEN="your_token" \
@@ -176,6 +237,8 @@ fly secrets set \
   STASH_CHANNEL_ID="123..." \
   GENERAL_CHANNEL_ID="123..." \
   SCHEDULE_CHANNEL_ID="123..." \
+  NEWS_CHANNEL_ID="123..." \
+  THEATRE_CHANNEL_ID="123..." \
   STORAGE_BACKEND="sheets" \
   GOOGLE_SHEETS_ID="your_sheet_id" \
   GOOGLE_SERVICE_ACCOUNT_JSON="$(cat credentials.json)"
@@ -186,44 +249,13 @@ fly secrets set \
 fly deploy
 ```
 
-The bot will come online and sync slash commands to your server. To view logs:
-```bash
-fly logs
-```
+View logs: `fly logs`
 
-To redeploy after pushing code changes:
-```bash
-fly deploy
-```
-
-## Channel Setup
-
-The bot expects three channels in your server. Set their IDs in `.env`:
-
-| Variable | Purpose |
-|---|---|
-| `STASH_CHANNEL_ID` | Where new movie additions are posted |
-| `GENERAL_CHANNEL_ID` | Where voting polls are sent |
-| `SCHEDULE_CHANNEL_ID` | Where the schedule is maintained |
-
-## Dev Mode
-
-Set these in `.env` during development to route all bot activity to a single test channel:
-
-```
-DEV_MODE=true
-BOT_TESTING_CHANNEL_ID=<your-bot-testing-channel-id>
-```
-
-When `DEV_MODE=true`:
-- Slash commands are rejected (ephemeral error) if run outside the bot-testing channel
-- All channel posts (stash confirmations, polls, reviews) are redirected to the bot-testing channel
-
-Remove or set `DEV_MODE=false` when ready for production.
+---
 
 ## Requirements
 
 - Python 3.10+
 - discord.py 2.x
-- aiosqlite, aiohttp, python-dotenv
-- tzdata (required on Windows)
+- aiohttp, python-dotenv, tzdata (required on Windows)
+- gspread, google-auth (for Google Sheets backend)

@@ -174,6 +174,10 @@ class PollCog(commands.Cog, name="Poll"):
         for m in movies:
             await self.bot.storage.update_movie(m.id, status=MovieStatus.NOMINATED)
 
+        maintenance = self.bot.get_cog("Maintenance")
+        if maintenance:
+            await maintenance.post_poll_announcement(general_ch)
+
         reply = f"✅ Poll created in {general_ch.mention} (poll id={poll.id})."
         if closes_at:
             reply += f"\nVoting closes {closes_str}."
@@ -212,6 +216,32 @@ class PollCog(commands.Cog, name="Poll"):
                 lines.append(f"{entry.emoji} **{movie.display_title}** — {votes} vote(s)")
         embed = discord.Embed(title="🗳️ Current Vote Tally", description="\n".join(lines), color=discord.Color.gold())
         await interaction.followup.send(embed=embed, ephemeral=True)
+
+    # ── /poll cancel ──────────────────────────────────────────────────────
+
+    @poll.command(name="cancel", description="Cancel the poll with no winner — all movies return to stash.")
+    @app_commands.describe(poll_id="Poll ID (omit for latest open poll)")
+    async def poll_cancel(
+        self,
+        interaction: discord.Interaction,
+        poll_id: int | None = None,
+    ):
+        await interaction.response.defer()
+        poll = await self._resolve_poll(poll_id, allow_closed=True)
+        if not poll:
+            await interaction.followup.send("⚠️ No poll found.", ephemeral=True)
+            return
+        if poll.status == "closed":
+            await interaction.followup.send(f"ℹ️ Poll id={poll.id} is already closed.", ephemeral=True)
+            return
+
+        for entry in poll.entries:
+            movie = await self.bot.storage.get_movie(entry.movie_id)
+            if movie and movie.status == MovieStatus.NOMINATED:
+                await self.bot.storage.update_movie(entry.movie_id, status=MovieStatus.STASH)
+
+        await self.bot.storage.close_poll(poll.id)
+        await interaction.followup.send(f"🚫 Poll cancelled — all nominated movies returned to stash.")
 
     # ── /poll close ───────────────────────────────────────────────────────
 
@@ -298,6 +328,10 @@ class PollCog(commands.Cog, name="Poll"):
                     await self.bot.storage.update_movie(entry.movie_id, status=MovieStatus.STASH)
 
         await self.bot.storage.close_poll(poll.id)
+
+        maintenance = self.bot.get_cog("Maintenance")
+        if maintenance:
+            await maintenance.post_schedule_announcement(winner_movie, slot)
 
         winner_votes = vote_counts.get(winner_entry.movie_id, 0)
         result_msg = (

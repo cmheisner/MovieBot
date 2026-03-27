@@ -285,7 +285,22 @@ class StashCog(commands.Cog, name="Stash"):
         movie = await resolve_movie(self.bot.storage, interaction, title, year)
         if not movie:
             return
+        await self._mark_watched(interaction, movie)
+
+    async def _mark_watched(self, interaction, movie):
+        """Shared logic for marking a movie watched and cleaning up its Discord event."""
         await self.bot.storage.update_movie(movie.id, status=MovieStatus.WATCHED)
+
+        # Clean up Discord event if one exists
+        entry = await self.bot.storage.get_schedule_entry_for_movie(movie.id)
+        if entry and entry.discord_event_id and interaction.guild:
+            try:
+                event = await interaction.guild.fetch_scheduled_event(int(entry.discord_event_id))
+                await event.delete()
+                await self.bot.storage.update_schedule_entry(entry.id, discord_event_id=None)
+            except Exception:
+                pass
+
         await interaction.followup.send(f"✅ **{movie.display_title}** marked as watched!")
 
     # ── /stash archive ────────────────────────────────────────────────────
@@ -317,6 +332,23 @@ class StashCog(commands.Cog, name="Stash"):
         embed.description = "\n".join(lines)
         embed.set_footer(text=f"{len(history)} movie(s) watched")
         await interaction.followup.send(embed=embed)
+
+
+    # ── /watched (shortcut) ───────────────────────────────────────────────
+
+    @app_commands.command(name="watched", description="Mark a movie as watched.")
+    @app_commands.describe(title="Movie title", year="Release year (optional)")
+    async def watched_shortcut(
+        self,
+        interaction: discord.Interaction,
+        title: str,
+        year: int | None = None,
+    ):
+        await interaction.response.defer()
+        movie = await resolve_movie(self.bot.storage, interaction, title, year)
+        if not movie:
+            return
+        await self._mark_watched(interaction, movie)
 
 
 async def setup(bot):
