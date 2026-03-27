@@ -11,7 +11,7 @@ from discord.ext import commands, tasks
 from bot.constants import TZ_EASTERN
 from bot.models.movie import Movie, MovieStatus
 from bot.utils.apple_tv import resolve_event_image
-from bot.utils.embeds import build_calendar_embed, SCHEDULE_COLOR
+from bot.utils.embeds import SCHEDULE_COLOR
 from bot.utils.time_utils import format_dt_eastern
 
 log = logging.getLogger(__name__)
@@ -474,54 +474,70 @@ class MaintenanceCog(commands.Cog):
             key=lambda e: _aware(e.scheduled_for),
         )
 
-        # Build movie embeds for the next 3 upcoming movies
-        movie_embeds = []
-        for entry in upcoming[:3]:
+        # Embed 1: next movie with poster
+        if upcoming:
+            entry = upcoming[0]
             movie = await self.bot.storage.get_movie(entry.movie_id)
-            if not movie:
-                continue
+        else:
+            movie = None
+            entry = None
+
+        all_embeds: list[discord.Embed] = []
+
+        if movie and entry:
             image_url = await resolve_event_image(movie)
             date_str = format_dt_eastern(_aware(entry.scheduled_for))
 
-            embed = discord.Embed(
+            meta_parts = []
+            if movie.omdb_data:
+                genre = movie.omdb_data.get("Genre", "")
+                rating = movie.omdb_data.get("imdbRating", "")
+                if genre and genre != "N/A":
+                    meta_parts.append(genre)
+                if rating and rating != "N/A":
+                    meta_parts.append(f"⭐ {rating}/10")
+
+            movie_embed = discord.Embed(
                 title=movie.display_title,
                 description=date_str,
                 color=SCHEDULE_COLOR,
             )
+            if meta_parts:
+                movie_embed.set_footer(text=" · ".join(meta_parts))
             if image_url:
-                embed.set_image(url=image_url)
-            if movie.omdb_data:
-                parts = []
-                genre = movie.omdb_data.get("Genre", "")
-                rating = movie.omdb_data.get("imdbRating", "")
-                if genre and genre != "N/A":
-                    parts.append(genre)
-                if rating and rating != "N/A":
-                    parts.append(f"⭐ {rating}/10")
-                if parts:
-                    embed.set_footer(text=" · ".join(parts))
-            movie_embeds.append(embed)
+                movie_embed.set_image(url=image_url)
+            all_embeds.append(movie_embed)
 
-        # Build calendar for the month of the next upcoming movie (or current month)
-        if upcoming:
-            cal_dt = _to_eastern(upcoming[0].scheduled_for)
-        else:
-            cal_dt = datetime.now(TZ_EASTERN)
-        year, month = cal_dt.year, cal_dt.month
-
-        month_entries = [
-            e for e in upcoming
-            if _to_eastern(e.scheduled_for).month == month
-            and _to_eastern(e.scheduled_for).year == year
-        ]
-        movies_by_id = {}
-        for e in month_entries:
+        # Embed 2: upcoming schedule list (plain text — no code blocks so it renders full width)
+        lines = []
+        for e in upcoming[:10]:
             m = await self.bot.storage.get_movie(e.movie_id)
-            if m:
-                movies_by_id[e.movie_id] = m
+            if not m:
+                continue
+            et = _to_eastern(e.scheduled_for)
+            day = et.strftime("%d").lstrip("0") or "1"
+            date_label = et.strftime(f"%a %b {day}")
+            rating_str = ""
+            if m.omdb_data:
+                r = m.omdb_data.get("imdbRating", "")
+                if r and r != "N/A":
+                    rating_str = f" ⭐{r}"
+            lines.append(f"🎬 {date_label} — **{m.display_title}**{rating_str}")
 
-        cal_embed = build_calendar_embed(year, month, month_entries, movies_by_id)
-        all_embeds = movie_embeds + [cal_embed]
+        if lines:
+            schedule_embed = discord.Embed(
+                title="🗓️ Coming Up",
+                description="\n".join(lines),
+                color=SCHEDULE_COLOR,
+            )
+            schedule_embed.set_footer(text="Movie nights: Wed & Thu at 10:30 PM ET")
+            all_embeds.append(schedule_embed)
+        elif not all_embeds:
+            schedule_embed = discord.Embed(
+                description="_Nothing scheduled yet._",
+                color=SCHEDULE_COLOR,
+            )
+            all_embeds.append(schedule_embed)
 
         try:
             await channel.send(embeds=all_embeds)

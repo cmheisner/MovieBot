@@ -112,8 +112,8 @@ def poll_embed(
     return embed
 
 
-def build_calendar_embed(year: int, month: int, entries: list, movies_by_id: dict) -> discord.Embed:
-    """Build an ANSI calendar embed for the given month.
+def build_calendar_content(year: int, month: int, entries: list, movies_by_id: dict) -> tuple[str, str]:
+    """Return (ansi_code_block, legend_text) for the given month.
 
     entries must already be filtered to the target month/year.
     movies_by_id maps movie_id → Movie for those entries.
@@ -171,6 +171,13 @@ def build_calendar_embed(year: int, month: int, entries: list, movies_by_id: dic
     else:
         legend = "_No movies scheduled this month._"
 
+    return code_block, legend
+
+
+def build_calendar_embed(year: int, month: int, entries: list, movies_by_id: dict) -> discord.Embed:
+    """Build an ANSI calendar embed for the given month."""
+    code_block, legend = build_calendar_content(year, month, entries, movies_by_id)
+    month_name = _calendar.month_name[month]
     embed = discord.Embed(
         title=f"📅 {month_name} {year}",
         description=code_block + "\n" + legend,
