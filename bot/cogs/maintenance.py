@@ -510,7 +510,7 @@ class MaintenanceCog(commands.Cog):
 
         # Embed 2: upcoming schedule list (plain text — no code blocks so it renders full width)
         lines = []
-        for e in upcoming[:10]:
+        for e in upcoming[1:11]:
             m = await self.bot.storage.get_movie(e.movie_id)
             if not m:
                 continue
