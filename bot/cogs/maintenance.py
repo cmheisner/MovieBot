@@ -10,7 +10,7 @@ from discord.ext import commands, tasks
 
 from bot.constants import TZ_EASTERN
 from bot.models.movie import Movie, MovieStatus
-from bot.utils.apple_tv import resolve_event_image
+from bot.utils.apple_tv import find_apple_tv_url, resolve_event_image
 from bot.utils.embeds import SCHEDULE_COLOR
 from bot.utils.time_utils import format_dt_eastern
 
@@ -318,13 +318,20 @@ class MaintenanceCog(commands.Cog):
                         await self.bot.storage.update_schedule_entry(entry.id, discord_event_id=None)
                     continue
 
-                if entry.discord_event_id:
-                    keep_event_ids.add(entry.discord_event_id)
-                    continue
-
                 movie = await self.bot.storage.get_movie(entry.movie_id)
                 if not movie:
                     continue
+
+                if entry.discord_event_id:
+                    # Verify the event still exists in Discord; recreate if it was deleted
+                    try:
+                        await guild.fetch_scheduled_event(int(entry.discord_event_id))
+                        keep_event_ids.add(entry.discord_event_id)
+                        continue
+                    except Exception:
+                        log.info("Auto events: event %s for %r no longer exists — recreating.", entry.discord_event_id, movie.title)
+                        await self.bot.storage.update_schedule_entry(entry.id, discord_event_id=None)
+
                 success = await self._create_event_for_entry(guild, entry, movie)
                 if success:
                     created += 1
@@ -354,8 +361,36 @@ class MaintenanceCog(commands.Cog):
         except Exception:
             log.exception("Auto event creation failed with an unexpected error.")
 
+    async def _enrich_movie(self, movie) -> None:
+        """Auto-fetch missing OMDB data and Apple TV URL for a movie, saving results."""
+        updated = {}
+
+        if not movie.omdb_data and hasattr(self.bot, "media"):
+            try:
+                omdb = await self.bot.media.fetch_metadata(movie.title, movie.year)
+                if omdb:
+                    updated["omdb_data"] = omdb
+                    movie.omdb_data = omdb
+                    log.info("Auto-enrich: fetched OMDB data for %r.", movie.title)
+            except Exception as exc:
+                log.warning("Auto-enrich: OMDB fetch failed for %r: %s", movie.title, exc)
+
+        if not movie.apple_tv_url:
+            try:
+                url = await find_apple_tv_url(movie.title, movie.year)
+                if url:
+                    updated["apple_tv_url"] = url
+                    movie.apple_tv_url = url
+                    log.info("Auto-enrich: found Apple TV URL for %r: %s", movie.title, url)
+            except Exception as exc:
+                log.warning("Auto-enrich: Apple TV search failed for %r: %s", movie.title, exc)
+
+        if updated:
+            await self.bot.storage.update_movie(movie.id, **updated)
+
     async def _create_event_for_entry(self, guild: discord.Guild, entry, movie) -> bool:
         """Create a Discord ScheduledEvent for a schedule entry. Returns True on success."""
+        await self._enrich_movie(movie)
         image_url = await resolve_event_image(movie)
 
         description_parts = [f"🎬 {movie.display_title}"]
@@ -485,6 +520,7 @@ class MaintenanceCog(commands.Cog):
         all_embeds: list[discord.Embed] = []
 
         if movie and entry:
+            await self._enrich_movie(movie)
             image_url = await resolve_event_image(movie)
             date_str = format_dt_eastern(_aware(entry.scheduled_for))
 
