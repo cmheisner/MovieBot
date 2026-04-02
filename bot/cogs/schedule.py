@@ -209,10 +209,18 @@ class ScheduleCog(commands.Cog, name="Schedule"):
 
         # ── 2. Determine new datetime ─────────────────────────────────────
         if new_date:
-            try:
-                naive_date = datetime.strptime(new_date, "%Y-%m-%d")
-            except ValueError:
-                await interaction.followup.send("⚠️ Invalid date format. Use YYYY-MM-DD.", ephemeral=True)
+            _DATE_FORMATS = ["%Y-%m-%d", "%m/%d/%Y", "%m-%d-%Y", "%m/%d/%y", "%B %d %Y", "%b %d %Y"]
+            naive_date = None
+            for fmt in _DATE_FORMATS:
+                try:
+                    naive_date = datetime.strptime(new_date, fmt)
+                    break
+                except ValueError:
+                    continue
+            if naive_date is None:
+                await interaction.followup.send(
+                    "⚠️ Couldn't parse that date. Try formats like `2026-04-02` or `4/2/2026`.", ephemeral=True
+                )
                 return
             eastern_old = d_old.astimezone(TZ_EASTERN)
             naive_new = naive_date.replace(
@@ -228,11 +236,18 @@ class ScheduleCog(commands.Cog, name="Schedule"):
             )
             return
 
-        # ── 3. Shift all entries at or after new_dt (except entry_target) ─
-        entries_to_shift = [
-            e for e in all_entries_asc
-            if e.id != entry_target.id and e.scheduled_for >= new_dt
-        ]
+        # ── 3. Only cascade if the destination slot is already occupied ──────
+        # Moving a movie into an empty slot should never displace other movies.
+        slot_occupied = any(
+            e.id != entry_target.id
+            and abs((e.scheduled_for - new_dt).total_seconds()) <= 43200  # within 12 hrs
+            for e in all_entries_asc
+        )
+        entries_to_shift = (
+            [e for e in all_entries_asc if e.id != entry_target.id and e.scheduled_for >= new_dt]
+            if slot_occupied
+            else []
+        )
 
         shifted_titles = []
         for e in entries_to_shift:
@@ -285,7 +300,10 @@ class ScheduleCog(commands.Cog, name="Schedule"):
             lines.append(swap_line)
         if shifted_titles:
             lines.append(f"\n**{len(shifted_titles)} subsequent movie(s) shifted +1 week:**")
-            lines.extend(shifted_titles)
+            # Show first 10 shifted movies; summarise the rest to stay under 2000 chars
+            lines.extend(shifted_titles[:10])
+            if len(shifted_titles) > 10:
+                lines.append(f"• _...and {len(shifted_titles) - 10} more_")
         lines.append("\n-# Run `/event-create` to recreate any Discord events.")
         await interaction.followup.send("\n".join(lines))
 
