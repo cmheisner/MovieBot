@@ -61,6 +61,7 @@ class StorageProvider(ABC):
         movie_ids: list[int],
         emojis: list[str],
         closes_at: Optional[datetime] = None,
+        target_date: Optional[datetime] = None,
     ) -> Poll:
         pass
 

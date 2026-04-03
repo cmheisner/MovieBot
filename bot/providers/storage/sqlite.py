@@ -39,7 +39,8 @@ CREATE TABLE IF NOT EXISTS polls (
     created_at     TEXT    NOT NULL,
     closes_at      TEXT,
     closed_at      TEXT,
-    status         TEXT    NOT NULL DEFAULT 'open'
+    status         TEXT    NOT NULL DEFAULT 'open',
+    target_date    TEXT
 );
 
 CREATE TABLE IF NOT EXISTS poll_entries (
@@ -112,6 +113,7 @@ def _row_to_poll(row: aiosqlite.Row, entries: list[PollEntry]) -> Poll:
         closes_at=_parse_dt(row["closes_at"]),
         closed_at=_parse_dt(row["closed_at"]),
         entries=entries,
+        target_date=_parse_dt(row["target_date"]),
     )
 
 
@@ -142,6 +144,12 @@ class SQLiteStorageProvider(StorageProvider):
         # Migration: add group_name column if it doesn't exist yet
         try:
             await self._db.execute("ALTER TABLE movies ADD COLUMN group_name TEXT")
+            await self._db.commit()
+        except aiosqlite.OperationalError:
+            pass  # Column already exists
+        # Migration: add target_date column to polls if it doesn't exist yet
+        try:
+            await self._db.execute("ALTER TABLE polls ADD COLUMN target_date TEXT")
             await self._db.commit()
         except aiosqlite.OperationalError:
             pass  # Column already exists
@@ -236,15 +244,17 @@ class SQLiteStorageProvider(StorageProvider):
         movie_ids: list[int],
         emojis: list[str],
         closes_at: Optional[datetime] = None,
+        target_date: Optional[datetime] = None,
     ) -> Poll:
         now = _now_iso()
         closes_iso = closes_at.isoformat() if closes_at else None
+        target_iso = target_date.isoformat() if target_date else None
         async with self._db.execute(
             """
-            INSERT INTO polls (discord_msg_id, channel_id, created_at, closes_at, status)
-            VALUES (?, ?, ?, ?, 'open')
+            INSERT INTO polls (discord_msg_id, channel_id, created_at, closes_at, status, target_date)
+            VALUES (?, ?, ?, ?, 'open', ?)
             """,
-            (discord_msg_id, channel_id, now, closes_iso),
+            (discord_msg_id, channel_id, now, closes_iso, target_iso),
         ) as cur:
             poll_id = cur.lastrowid
 

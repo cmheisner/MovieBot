@@ -23,6 +23,7 @@ class Poll:
     closes_at: Optional[datetime] = None
     closed_at: Optional[datetime] = None
     entries: list[PollEntry] = None
+    target_date: Optional[datetime] = None
 
     def __post_init__(self):
         if self.entries is None:

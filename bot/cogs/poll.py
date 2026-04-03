@@ -7,7 +7,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
-from bot.constants import NUMBER_EMOJI, MAX_POLL_OPTIONS
+from bot.constants import NUMBER_EMOJI, MAX_POLL_OPTIONS, TZ_EASTERN, MOVIE_NIGHT_HOUR, MOVIE_NIGHT_MINUTE
 from bot.models.movie import Movie, MovieStatus
 from bot.models.poll import Poll, PollEntry
 from bot.utils.embeds import poll_embed
@@ -73,8 +73,11 @@ class PollCog(commands.Cog, name="Poll"):
 
     # ── /poll create ──────────────────────────────────────────────────────
 
+    _DATE_FORMATS = ["%Y-%m-%d", "%m/%d/%Y", "%m-%d-%Y", "%m/%d/%y", "%B %d %Y", "%b %d %Y"]
+
     @poll.command(name="create", description="Create a voting poll from stash movies.")
     @app_commands.describe(
+        date="Movie night date this poll is for (e.g. 2026-04-09 or 4/9/2026)",
         movie_1="First movie (start typing to search the stash)",
         movie_2="Second movie",
         movie_3="Third movie",
@@ -84,6 +87,7 @@ class PollCog(commands.Cog, name="Poll"):
     async def poll_create(
         self,
         interaction: discord.Interaction,
+        date: str,
         movie_1: str,
         movie_2: str | None = None,
         movie_3: str | None = None,
@@ -91,6 +95,49 @@ class PollCog(commands.Cog, name="Poll"):
         duration_hours: int = 24,
     ):
         await interaction.response.defer()
+
+        # Guard: block if a poll is already open
+        existing_poll = await self.bot.storage.get_latest_open_poll()
+        if existing_poll:
+            await interaction.followup.send(
+                f"⚠️ Poll id={existing_poll.id} is already open. Use `/poll cancel` or `/poll close` first.",
+                ephemeral=True,
+            )
+            return
+
+        # Parse target date
+        naive_date = None
+        for fmt in self._DATE_FORMATS:
+            try:
+                naive_date = datetime.strptime(date, fmt)
+                break
+            except ValueError:
+                continue
+        if naive_date is None:
+            await interaction.followup.send(
+                "⚠️ Couldn't parse that date. Try formats like `2026-04-09` or `4/9/2026`.",
+                ephemeral=True,
+            )
+            return
+
+        naive = naive_date.replace(
+            hour=MOVIE_NIGHT_HOUR, minute=MOVIE_NIGHT_MINUTE, second=0, microsecond=0
+        )
+        target_date = naive.replace(tzinfo=TZ_EASTERN).astimezone(timezone.utc)
+
+        # Conflict check: is anything already scheduled for this date?
+        all_entries = await self.bot.storage.list_schedule_entries(upcoming_only=True, limit=500)
+        conflict = next(
+            (e for e in all_entries if abs((e.scheduled_for - target_date).total_seconds()) <= 43200),
+            None,
+        )
+        if conflict:
+            conflict_movie = await self.bot.storage.get_movie(conflict.movie_id)
+            conflict_title = conflict_movie.display_title if conflict_movie else f"Movie #{conflict.movie_id}"
+            await interaction.followup.send(
+                f"⚠️ **{conflict_title}** is already scheduled for that date.", ephemeral=True
+            )
+            return
 
         # Collect the provided IDs, preserving order and skipping blanks
         raw_ids = [v for v in [movie_1, movie_2, movie_3, movie_4] if v]
@@ -153,11 +200,12 @@ class PollCog(commands.Cog, name="Poll"):
             return
 
         closes_str = format_dt_eastern(closes_at) if closes_at else None
+        target_str = format_dt_eastern(target_date)
         temp_entries = [
             PollEntry(id=0, poll_id=0, movie_id=m.id, position=i + 1, emoji=emojis[i])
             for i, m in enumerate(movies)
         ]
-        embed = poll_embed(movies, temp_entries, closes_at_str=closes_str)
+        embed = poll_embed(movies, temp_entries, closes_at_str=closes_str, target_date_str=target_str)
 
         msg = await general_ch.send(embed=embed)
         for emoji in emojis:
@@ -169,6 +217,7 @@ class PollCog(commands.Cog, name="Poll"):
             movie_ids=[m.id for m in movies],
             emojis=emojis,
             closes_at=closes_at,
+            target_date=target_date,
         )
 
         for m in movies:
@@ -178,7 +227,7 @@ class PollCog(commands.Cog, name="Poll"):
         if maintenance:
             await maintenance.post_poll_announcement(general_ch)
 
-        reply = f"✅ Poll created in {general_ch.mention} (poll id={poll.id})."
+        reply = f"✅ Poll created in {general_ch.mention} for **{target_str}** (poll id={poll.id})."
         if closes_at:
             reply += f"\nVoting closes {closes_str}."
         await interaction.followup.send(reply, ephemeral=True)
@@ -309,7 +358,7 @@ class PollCog(commands.Cog, name="Poll"):
 
         winner_movie = movies_by_id[winner_entry.movie_id]
 
-        slot = next_movie_night()
+        slot = poll.target_date or next_movie_night()
         try:
             await self.bot.storage.add_schedule_entry(
                 movie_id=winner_movie.id,

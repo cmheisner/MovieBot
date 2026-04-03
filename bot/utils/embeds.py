@@ -93,10 +93,14 @@ def poll_embed(
     movies: list[Movie],
     entries: list[PollEntry],
     closes_at_str: Optional[str] = None,
+    target_date_str: Optional[str] = None,
 ) -> discord.Embed:
+    description = "React below to vote for the next movie night pick."
+    if target_date_str:
+        description += f"\n🎬 Movie night: **{target_date_str}**"
     embed = discord.Embed(
         title="🗳️ Movie Night Vote!",
-        description="React below to vote for the next movie night pick.",
+        description=description,
         color=POLL_COLOR,
     )
     for entry in entries:

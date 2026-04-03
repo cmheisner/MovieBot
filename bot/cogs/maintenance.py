@@ -11,6 +11,7 @@ from discord.ext import commands, tasks
 from bot.constants import TZ_EASTERN
 from bot.models.movie import Movie, MovieStatus
 from bot.utils.apple_tv import find_apple_tv_url, resolve_event_image
+from bot.utils.genres import build_role_mention_string
 from bot.utils.embeds import SCHEDULE_COLOR
 from bot.utils.time_utils import format_dt_eastern
 
@@ -246,21 +247,11 @@ class MaintenanceCog(commands.Cog):
                     continue
 
                 guild = self.bot.get_guild(self.bot.config.guild_id)
-                role_mentions = ""
-                if guild and movie.omdb_data:
-                    raw_genres = movie.omdb_data.get("Genre", "")
-                    if raw_genres and raw_genres != "N/A":
-                        mentions = []
-                        for genre in raw_genres.split(","):
-                            role = discord.utils.get(guild.roles, name=genre.strip())
-                            if role:
-                                mentions.append(role.mention)
-                        if mentions:
-                            role_mentions = " ".join(mentions) + " "
+                role_mentions = build_role_mention_string(guild, movie.omdb_data) if guild else ""
 
                 await news_ch.send(
-                    f"{role_mentions}🍿 **Movie Night starts in 30 minutes!** Tonight we're watching "
-                    f"**{movie.display_title}**. See you in the Theatre! 🎬"
+                    f"🍿 **Movie Night starts in 30 minutes!** {role_mentions}Tonight we're watching "
+                    f"**{movie.display_title}**. See you in the https://discord.gg/JzZVnM76Yj 🍿"
                 )
                 self._reminded_ids.add(entry.id)
                 log.info("Reminder: sent movie night reminder for %r.", movie.title)
@@ -590,17 +581,7 @@ class MaintenanceCog(commands.Cog):
             log.warning("News announcement: #news channel not configured or not found.")
         else:
             guild = self.bot.get_guild(self.bot.config.guild_id)
-            role_mentions = ""
-            if guild and movie.omdb_data:
-                raw_genres = movie.omdb_data.get("Genre", "")
-                if raw_genres and raw_genres != "N/A":
-                    mentions = []
-                    for genre in raw_genres.split(","):
-                        role = discord.utils.get(guild.roles, name=genre.strip())
-                        if role:
-                            mentions.append(role.mention)
-                    if mentions:
-                        role_mentions = " ".join(mentions) + " "
+            role_mentions = build_role_mention_string(guild, movie.omdb_data) if guild else ""
 
             date_str = format_dt_eastern(scheduled_for)
             msg = f"{role_mentions}🎬 **{movie.display_title}** has been added to Movie Night! Scheduled for **{date_str}**."
@@ -610,6 +591,54 @@ class MaintenanceCog(commands.Cog):
                 log.error("News announcement: failed to post: %s", exc)
 
         await self._run_refresh_schedule_channel()
+
+    # ── Discord event completion listener ────────────────────────────────
+
+    @commands.Cog.listener()
+    async def on_scheduled_event_update(
+        self, before: discord.ScheduledEvent, after: discord.ScheduledEvent
+    ) -> None:
+        """When a Discord event completes, mark the movie as watched and refresh the schedule."""
+        if after.status != discord.EventStatus.completed:
+            return
+        try:
+            all_entries = await self.bot.storage.list_schedule_entries(upcoming_only=False, limit=500)
+            entry = next((e for e in all_entries if e.discord_event_id == str(after.id)), None)
+            if not entry:
+                return
+
+            movie = await self.bot.storage.get_movie(entry.movie_id)
+            if not movie or movie.status != MovieStatus.SCHEDULED:
+                return
+
+            await self.bot.storage.update_movie(movie.id, status=MovieStatus.WATCHED)
+            await self.bot.storage.delete_schedule_entry(entry.id)
+            log.info("Event end: marked %r as watched via on_scheduled_event_update.", movie.title)
+
+            # Post to #news
+            news_ch = self.bot.get_channel(self.bot.config.news_channel_id)
+            if news_ch:
+                try:
+                    await news_ch.send(
+                        f"🍿 Thanks for watching **{movie.display_title}** tonight! "
+                        f"Hope you enjoyed it. 🎬"
+                    )
+                except Exception as exc:
+                    log.warning("Event end: could not post to #news: %s", exc)
+
+            # Reset profile override if active
+            profile_cog = self.bot.cogs.get("ProfileCog")
+            if profile_cog:
+                await profile_cog.reset_if_override()
+
+            # Refresh schedule channel and recreate next event
+            await self._run_refresh_schedule_channel()
+            await self._run_auto_create_events()
+
+        except Exception:
+            log.exception("on_scheduled_event_update handler failed.")
+
+    # ── #news genre role announcement ────────────────────────────────────
 
     async def post_poll_announcement(self, general_ch: discord.TextChannel) -> None:
         """Notify #news that a new poll is live."""

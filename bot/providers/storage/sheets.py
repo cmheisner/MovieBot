@@ -20,7 +20,7 @@ MOVIE_COLS = [
     "id", "title", "year", "notes", "apple_tv_url", "image_url",
     "added_by", "added_by_id", "added_at", "status", "omdb_data", "group_name",
 ]
-POLL_COLS = ["id", "discord_msg_id", "channel_id", "created_at", "closes_at", "closed_at", "status"]
+POLL_COLS = ["id", "discord_msg_id", "channel_id", "created_at", "closes_at", "closed_at", "status", "target_date"]
 ENTRY_COLS = ["id", "poll_id", "movie_id", "position", "emoji"]
 SCHEDULE_COLS = ["id", "movie_id", "poll_id", "scheduled_for", "discord_event_id", "posted_msg_id", "created_at"]
 TZ_COLS = ["user_id", "tz_name"]
@@ -110,6 +110,7 @@ def _row_to_poll(r: list[str], entries: list[PollEntry]) -> Poll:
         closed_at=_parse_dt(r[5]),
         status=r[6],
         entries=entries,
+        target_date=_parse_dt(r[7]) if len(r) > 7 else None,
     )
 
 
@@ -315,6 +316,7 @@ class GoogleSheetsStorageProvider(StorageProvider):
         movie_ids: list[int],
         emojis: list[str],
         closes_at: Optional[datetime] = None,
+        target_date: Optional[datetime] = None,
     ) -> Poll:
         def _do() -> int:
             ws_polls = self._ws("polls")
@@ -325,7 +327,7 @@ class GoogleSheetsStorageProvider(StorageProvider):
             entry_id = _next_id(entry_rows)
             now = _now_iso()
             ws_polls.append_row(
-                [str(poll_id), discord_msg_id, channel_id, now, _to_str(closes_at), "", "open"],
+                [str(poll_id), discord_msg_id, channel_id, now, _to_str(closes_at), "", "open", _to_str(target_date)],
                 value_input_option="RAW",
             )
             for pos, (movie_id, emoji) in enumerate(zip(movie_ids, emojis), start=1):
