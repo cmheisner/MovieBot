@@ -128,36 +128,50 @@ class ScheduleCog(commands.Cog, name="Schedule"):
 
     # ── /schedule remove ──────────────────────────────────────────────────
 
-    @schedule.command(name="remove", description="Remove a schedule entry.")
-    @app_commands.describe(schedule_id="Schedule entry ID from /schedule list")
+    @schedule.command(name="remove", description="Remove a scheduled movie and return it to the stash.")
+    @app_commands.describe(movie="Movie title", year="Release year (optional)")
     async def schedule_remove(
         self,
         interaction: discord.Interaction,
-        schedule_id: int,
+        movie: str,
+        year: int | None = None,
     ):
         await interaction.response.defer(ephemeral=True)
-        entry = await self.bot.storage.get_schedule_entry(schedule_id)
-        if not entry:
-            await interaction.followup.send(f"⚠️ Schedule entry id={schedule_id} not found.", ephemeral=True)
+        m = await resolve_movie(self.bot.storage, interaction, movie, year)
+        if not m:
             return
 
-        # Try to delete Discord event if one was created
+        entry = await self.bot.storage.get_schedule_entry_for_movie(m.id)
+        if not entry:
+            await interaction.followup.send(
+                f"⚠️ **{m.display_title}** is not currently scheduled.", ephemeral=True
+            )
+            return
+
         if entry.discord_event_id:
             try:
-                guild = interaction.guild
-                event = await guild.fetch_scheduled_event(int(entry.discord_event_id))
+                event = await interaction.guild.fetch_scheduled_event(int(entry.discord_event_id))
                 await event.delete()
             except Exception as e:
                 log.warning("Could not delete Discord event %s: %s", entry.discord_event_id, e)
 
-        movie = await self.bot.storage.get_movie(entry.movie_id)
-        await self.bot.storage.delete_schedule_entry(schedule_id)
+        await self.bot.storage.delete_schedule_entry(entry.id)
+        await self.bot.storage.update_movie(m.id, status=MovieStatus.STASH)
+        await interaction.followup.send(
+            f"🗑️ **{m.display_title}** removed from the schedule and returned to stash.", ephemeral=True
+        )
 
-        if movie and movie.status == MovieStatus.SCHEDULED:
-            await self.bot.storage.update_movie(movie.id, status=MovieStatus.STASH)
+    # ── /schedule refresh ─────────────────────────────────────────────────
 
-        title = movie.display_title if movie else f"Movie #{entry.movie_id}"
-        await interaction.followup.send(f"🗑️ Removed **{title}** from the schedule.", ephemeral=True)
+    @schedule.command(name="refresh", description="Re-post the schedule in #schedule.")
+    async def schedule_refresh(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        maintenance = self.bot.get_cog("Maintenance")
+        if not maintenance:
+            await interaction.followup.send("⚠️ Maintenance cog not available.", ephemeral=True)
+            return
+        await maintenance._run_refresh_schedule_channel()
+        await interaction.followup.send("✅ Schedule refreshed.", ephemeral=True)
 
     # ── /schedule reschedule ──────────────────────────────────────────────
 

@@ -49,8 +49,9 @@ class HelpCog(commands.Cog, name="Help"):
                 "`/schedule list` — Show upcoming movies\n"
                 "`/schedule history` — Show full schedule history\n"
                 "`/schedule add` — Manually schedule a movie\n"
-                "`/schedule remove` — Remove a schedule entry\n"
+                "`/schedule remove` — Remove a scheduled movie (returns to stash)\n"
                 "`/schedule reschedule` — Move a movie to a new date\n"
+                "`/schedule refresh` — Re-post the schedule in #schedule\n"
                 "`/schedule calendar` — Show the monthly calendar"
             ),
             inline=False,
@@ -59,7 +60,7 @@ class HelpCog(commands.Cog, name="Help"):
         embed.add_field(
             name="🗳️ Poll",
             value=(
-                "`/poll create` — Create a vote from stash movies (up to 4)\n"
+                "`/poll create` — Create a vote from stash movies or a season tag\n"
                 "`/poll status` — See current vote tallies\n"
                 "`/poll close` — Close voting and schedule the winner\n"
                 "`/poll cancel` — Cancel the poll, return all movies to stash"
@@ -70,6 +71,17 @@ class HelpCog(commands.Cog, name="Help"):
         embed.add_field(
             name="💩 Reviews",
             value="`/reviews` — Post the worst audience reviews for a movie",
+            inline=False,
+        )
+
+        embed.add_field(
+            name="🤖 Profile",
+            value=(
+                "`/profile real` — Set bot avatar to real photo\n"
+                "`/profile toon` — Set bot avatar to cartoon image\n"
+                "`/profile upload` — Override avatar with a custom image (resets after next event)\n"
+                "`/profile reset` — Clear override and return to real/toon base"
+            ),
             inline=False,
         )
 

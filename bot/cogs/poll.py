@@ -12,6 +12,7 @@ from bot.models.movie import Movie, MovieStatus
 from bot.models.poll import Poll, PollEntry
 from bot.utils.embeds import poll_embed
 from bot.utils.time_utils import next_movie_night, format_dt_eastern
+from bot.cogs.seasons import SEASON_CHOICES
 
 log = logging.getLogger(__name__)
 
@@ -78,17 +79,20 @@ class PollCog(commands.Cog, name="Poll"):
     @poll.command(name="create", description="Create a voting poll from stash movies.")
     @app_commands.describe(
         date="Movie night date this poll is for (e.g. 2026-04-09 or 4/9/2026)",
+        season="Auto-fill poll with all stash movies tagged to this season",
         movie_1="First movie (start typing to search the stash)",
         movie_2="Second movie",
         movie_3="Third movie",
         movie_4="Fourth movie",
         duration_hours="How many hours voting stays open (0 = manual close only, default 24)",
     )
+    @app_commands.choices(season=SEASON_CHOICES)
     async def poll_create(
         self,
         interaction: discord.Interaction,
         date: str,
-        movie_1: str,
+        season: str | None = None,
+        movie_1: str | None = None,
         movie_2: str | None = None,
         movie_3: str | None = None,
         movie_4: str | None = None,
@@ -139,16 +143,26 @@ class PollCog(commands.Cog, name="Poll"):
             )
             return
 
-        # Collect the provided IDs, preserving order and skipping blanks
-        raw_ids = [v for v in [movie_1, movie_2, movie_3, movie_4] if v]
-
-        # Parse — autocomplete sends int IDs as strings; users might type titles
+        # Build movie list — season tag auto-load + explicit picks
         ids: list[int] = []
+
+        # Season: auto-load all stash movies tagged to this season
+        if season:
+            all_stash = await self.bot.storage.list_movies(status=MovieStatus.STASH)
+            season_movies = [m for m in all_stash if m.group_name == season]
+            if not season_movies:
+                await interaction.followup.send(
+                    f"⚠️ No stash movies found tagged as **{season}**.", ephemeral=True
+                )
+                return
+            ids.extend(m.id for m in season_movies)
+
+        # Explicit movie params
+        raw_ids = [v for v in [movie_1, movie_2, movie_3, movie_4] if v]
         for raw in raw_ids:
             if raw.isdigit():
                 ids.append(int(raw))
             else:
-                # Typed a title instead of picking from autocomplete — look it up
                 matches = await self.bot.storage.get_movies_by_title(raw)
                 stash_matches = [m for m in matches if m.status == MovieStatus.STASH]
                 if not stash_matches:
@@ -158,6 +172,13 @@ class PollCog(commands.Cog, name="Poll"):
                     return
                 ids.append(stash_matches[0].id)
 
+        # Must have at least one source
+        if not ids:
+            await interaction.followup.send(
+                "⚠️ Provide at least one movie or a season tag.", ephemeral=True
+            )
+            return
+
         # Deduplicate while preserving order
         seen: set[int] = set()
         unique_ids: list[int] = []
@@ -166,9 +187,11 @@ class PollCog(commands.Cog, name="Poll"):
                 seen.add(mid)
                 unique_ids.append(mid)
 
-        if not unique_ids or len(unique_ids) > MAX_POLL_OPTIONS:
+        if len(unique_ids) > MAX_POLL_OPTIONS:
             await interaction.followup.send(
-                f"⚠️ Choose between 1 and {MAX_POLL_OPTIONS} movies.", ephemeral=True
+                f"⚠️ Too many movies ({len(unique_ids)}). Maximum is {MAX_POLL_OPTIONS}. "
+                f"Remove some from the season stash or deselect some movies.",
+                ephemeral=True,
             )
             return
 

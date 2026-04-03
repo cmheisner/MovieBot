@@ -107,21 +107,27 @@ class ProfileCog(commands.Cog):
     )
     async def profile_reset(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer(ephemeral=True)
-        await self.reset_if_override(force=True)
+        success = await self.reset_if_override(force=True)
+        if not success:
+            await interaction.followup.send(
+                "⚠️ Avatar change failed — Discord may be rate-limiting. Try again in a few minutes.",
+                ephemeral=True,
+            )
+            return
         state = _load_state()
         base = state.get("base", "real")
         await interaction.followup.send(
             f"✅ Profile reset to **{'Real' if base == 'real' else 'Toon'}**.", ephemeral=True
         )
 
-    async def reset_if_override(self, force: bool = False) -> None:
+    async def reset_if_override(self, force: bool = False) -> bool:
         """
         Called by the event-end listener. If an override is active (or force=True),
-        reset the bot avatar back to the current base image.
+        reset the bot avatar back to the current base image. Returns True on success.
         """
         state = _load_state()
         if not force and not state.get("override"):
-            return
+            return True
         base = state.get("base", "real")
         image_path = REAL_IMAGE if base == "real" else TOON_IMAGE
         try:
@@ -130,8 +136,10 @@ class ProfileCog(commands.Cog):
             state["override"] = False
             _save_state(state)
             log.info("Profile reset to %s after event end.", base)
-        except discord.HTTPException as exc:
-            log.warning("Profile reset failed (rate limited?): %s", exc)
+            return True
+        except Exception as exc:
+            log.warning("Profile reset failed: %s", exc)
+            return False
 
 
 async def setup(bot: commands.Bot) -> None:
