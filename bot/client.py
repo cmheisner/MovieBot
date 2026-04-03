@@ -7,6 +7,7 @@ from discord.ext import commands
 
 from bot.config import BotConfig
 from bot.providers.media.omdb import OMDBMetadataProvider, NoOpMetadataProvider
+from bot.providers.media.plex import PlexClient, NoOpPlexClient
 from bot.providers.storage.sqlite import SQLiteStorageProvider
 
 log = logging.getLogger(__name__)
@@ -65,6 +66,11 @@ class MovieBotClient(commands.Bot):
             OMDBMetadataProvider(config.omdb_api_key)
             if config.omdb_api_key
             else NoOpMetadataProvider()
+        )
+        self.plex = (
+            PlexClient(config.plex_url, config.plex_token, config.plex_library_section_id)
+            if config.plex_url and config.plex_token
+            else NoOpPlexClient()
         )
 
     def get_active_channel_id(self, intended_channel_id: int) -> int:

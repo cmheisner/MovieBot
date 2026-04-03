@@ -22,6 +22,9 @@ class BotConfig:
     google_sheets_id: str = ""
     google_service_account_path: str = ""
     google_service_account_json: str = ""
+    plex_url: str = ""
+    plex_token: str = ""
+    plex_library_section_id: str = "1"
 
     @classmethod
     def from_env(cls) -> "BotConfig":
@@ -47,4 +50,7 @@ class BotConfig:
             google_sheets_id=os.environ.get("GOOGLE_SHEETS_ID", ""),
             google_service_account_path=os.environ.get("GOOGLE_SERVICE_ACCOUNT_PATH", ""),
             google_service_account_json=os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON", ""),
+            plex_url=os.environ.get("PLEX_URL", ""),
+            plex_token=os.environ.get("PLEX_TOKEN", ""),
+            plex_library_section_id=os.environ.get("PLEX_LIBRARY_SECTION_ID", "1"),
         )
