@@ -524,6 +524,10 @@ class MaintenanceCog(commands.Cog):
                 if rating and rating != "N/A":
                     meta_parts.append(f"⭐ {rating}/10")
 
+            on_plex = await self.bot.plex.check_movie(movie.title)
+            if on_plex:
+                meta_parts.append("📀 On Plex")
+
             movie_embed = discord.Embed(
                 title=movie.display_title,
                 description=date_str,
@@ -549,7 +553,10 @@ class MaintenanceCog(commands.Cog):
                 r = m.omdb_data.get("imdbRating", "")
                 if r and r != "N/A":
                     rating_str = f" ⭐{r}"
-            lines.append(f"🎬 {date_label} — **{m.display_title}**{rating_str}")
+            plex_str = ""
+            if await self.bot.plex.check_movie(m.title):
+                plex_str = " 📀"
+            lines.append(f"🎬 {date_label} — **{m.display_title}**{rating_str}{plex_str}")
 
         if lines:
             schedule_embed = discord.Embed(

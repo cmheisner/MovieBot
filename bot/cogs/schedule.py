@@ -37,7 +37,10 @@ class ScheduleCog(commands.Cog, name="Schedule"):
             m = await self.bot.storage.get_movie(e.movie_id)
             if m:
                 movies_by_id[e.movie_id] = m
-        embed = schedule_embed(entries, movies_by_id)
+        plex_availability = {}
+        for mid, m in movies_by_id.items():
+            plex_availability[mid] = await self.bot.plex.check_movie(m.title)
+        embed = schedule_embed(entries, movies_by_id, plex_availability)
         await interaction.followup.send(embed=embed)
 
     # ── /schedule history ─────────────────────────────────────────────────

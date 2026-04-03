@@ -191,7 +191,11 @@ def build_calendar_embed(year: int, month: int, entries: list, movies_by_id: dic
     return embed
 
 
-def schedule_embed(entries: list[ScheduleEntry], movies: dict[int, Movie]) -> discord.Embed:
+def schedule_embed(
+    entries: list[ScheduleEntry],
+    movies: dict[int, Movie],
+    plex_availability: dict[int, bool] | None = None,
+) -> discord.Embed:
     embed = discord.Embed(title="🗓️ Movie Night Schedule", color=SCHEDULE_COLOR)
     if not entries:
         embed.description = "_Nothing scheduled yet._"
@@ -204,6 +208,8 @@ def schedule_embed(entries: list[ScheduleEntry], movies: dict[int, Movie]) -> di
         line = f"**{title}** — {date_str}"
         if e.discord_event_id:
             line += " ✅"
+        if plex_availability and e.movie_id in plex_availability:
+            line += " 📀 On Plex" if plex_availability[e.movie_id] else ""
         lines.append(line)
     embed.description = "\n".join(lines)
     return embed
