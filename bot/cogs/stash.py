@@ -186,7 +186,10 @@ class StashCog(commands.Cog, name="Stash"):
         movies = await self.bot.storage.list_movies(status=status)
         if season is not None:
             movies = [m for m in movies if m.group_name == season]
-        embed = stash_list_embed(movies, status_label=status)
+        plex_availability = {}
+        for m in movies:
+            plex_availability[m.id] = await self.bot.plex.check_movie(m.title)
+        embed = stash_list_embed(movies, status_label=status, plex_availability=plex_availability)
         await interaction.followup.send(embed=embed)
 
     # ── /stash info ───────────────────────────────────────────────────────
@@ -203,7 +206,8 @@ class StashCog(commands.Cog, name="Stash"):
         movie = await resolve_movie(self.bot.storage, interaction, title, year)
         if not movie:
             return
-        await interaction.followup.send(embed=movie_card(movie))
+        on_plex = await self.bot.plex.check_movie(movie.title)
+        await interaction.followup.send(embed=movie_card(movie, on_plex=on_plex))
 
     # ── /stash edit ───────────────────────────────────────────────────────
 
@@ -325,9 +329,10 @@ class StashCog(commands.Cog, name="Stash"):
                 r = movie.omdb_data.get("imdbRating", "")
                 if r and r != "N/A":
                     rating = f" ⭐{r}"
+            plex_str = " 📀" if await self.bot.plex.check_movie(movie.title) else ""
             date_str = f" — {format_dt_eastern(scheduled_for)}" if scheduled_for else ""
             group_str = f" `{movie.group_name}`" if movie.group_name else ""
-            lines.append(f"**{movie.display_title}**{rating}{date_str}{group_str}")
+            lines.append(f"**{movie.display_title}**{rating}{plex_str}{date_str}{group_str}")
 
         embed.description = "\n".join(lines)
         embed.set_footer(text=f"{len(history)} movie(s) watched")
