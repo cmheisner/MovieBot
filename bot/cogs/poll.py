@@ -228,7 +228,10 @@ class PollCog(commands.Cog, name="Poll"):
             PollEntry(id=0, poll_id=0, movie_id=m.id, position=i + 1, emoji=emojis[i])
             for i, m in enumerate(movies)
         ]
-        embed = poll_embed(movies, temp_entries, closes_at_str=closes_str, target_date_str=target_str)
+        plex_availability = {}
+        for m in movies:
+            plex_availability[m.id] = await self.bot.plex.check_movie(m.title)
+        embed = poll_embed(movies, temp_entries, closes_at_str=closes_str, target_date_str=target_str, plex_availability=plex_availability)
 
         msg = await general_ch.send(embed=embed)
         for emoji in emojis:
@@ -285,7 +288,8 @@ class PollCog(commands.Cog, name="Poll"):
             movie = movies_by_id.get(entry.movie_id)
             if movie:
                 votes = vote_counts.get(entry.movie_id, 0)
-                lines.append(f"{entry.emoji} **{movie.display_title}** — {votes} vote(s)")
+                plex_tag = " 📀" if await self.bot.plex.check_movie(movie.title) else ""
+                lines.append(f"{entry.emoji} **{movie.display_title}**{plex_tag} — {votes} vote(s)")
         embed = discord.Embed(title="🗳️ Current Vote Tally", description="\n".join(lines), color=discord.Color.gold())
         await interaction.followup.send(embed=embed, ephemeral=True)
 

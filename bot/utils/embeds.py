@@ -18,7 +18,7 @@ SCHEDULE_COLOR = discord.Color.green()
 EVENT_COLOR = discord.Color.og_blurple()
 
 
-def movie_card(movie: Movie, *, title_prefix: str = "") -> discord.Embed:
+def movie_card(movie: Movie, *, title_prefix: str = "", on_plex: bool = False) -> discord.Embed:
     embed = discord.Embed(
         title=f"{title_prefix}{movie.display_title}",
         color=STASH_COLOR,
@@ -38,22 +38,32 @@ def movie_card(movie: Movie, *, title_prefix: str = "") -> discord.Embed:
             meta_parts.append(genre)
         if rating and rating != "N/A":
             meta_parts.append(f"⭐ {rating}/10")
+        if on_plex:
+            meta_parts.append("📀 On Plex")
         if meta_parts:
             embed.add_field(name="Info", value=" · ".join(meta_parts), inline=False)
+    elif on_plex:
+        embed.add_field(name="Info", value="📀 On Plex", inline=False)
     if movie.poster_url:
         embed.set_thumbnail(url=movie.poster_url)
     embed.set_footer(text=f"Added by {movie.added_by} · id={movie.id}")
     return embed
 
 
-def _movie_line(m: Movie) -> str:
+def _movie_line(m: Movie, *, on_plex: bool = False) -> str:
     line = f"`{m.id}` **{m.display_title}**"
+    if on_plex:
+        line += " 📀"
     if m.notes:
         line += f" — _{m.notes}_"
     return line
 
 
-def stash_list_embed(movies: list[Movie], status_label: str = "stash") -> discord.Embed:
+def stash_list_embed(
+    movies: list[Movie],
+    status_label: str = "stash",
+    plex_availability: dict[int, bool] | None = None,
+) -> discord.Embed:
     embed = discord.Embed(
         title=f"🎬 Movie Stash — {status_label.capitalize()}",
         color=STASH_COLOR,
@@ -76,14 +86,23 @@ def stash_list_embed(movies: list[Movie], status_label: str = "stash") -> discor
 
         sections: list[str] = []
         for group_name, group_movies in seen.items():
-            block = [f"**{group_name}**"] + [_movie_line(m) for m in group_movies]
+            block = [f"**{group_name}**"] + [
+                _movie_line(m, on_plex=bool(plex_availability and plex_availability.get(m.id)))
+                for m in group_movies
+            ]
             sections.append("\n".join(block))
         if ungrouped:
-            block = ["**Ungrouped**"] + [_movie_line(m) for m in ungrouped]
+            block = ["**Ungrouped**"] + [
+                _movie_line(m, on_plex=bool(plex_availability and plex_availability.get(m.id)))
+                for m in ungrouped
+            ]
             sections.append("\n".join(block))
         embed.description = "\n\n".join(sections)
     else:
-        embed.description = "\n".join(_movie_line(m) for m in movies)
+        embed.description = "\n".join(
+            _movie_line(m, on_plex=bool(plex_availability and plex_availability.get(m.id)))
+            for m in movies
+        )
 
     embed.set_footer(text=f"{len(movies)} movie(s) · Use /stash-info <title> <year> for details")
     return embed
@@ -94,6 +113,7 @@ def poll_embed(
     entries: list[PollEntry],
     closes_at_str: Optional[str] = None,
     target_date_str: Optional[str] = None,
+    plex_availability: dict[int, bool] | None = None,
 ) -> discord.Embed:
     description = "React below to vote for the next movie night pick."
     if target_date_str:
@@ -106,8 +126,9 @@ def poll_embed(
     for entry in entries:
         movie = next((m for m in movies if m.id == entry.movie_id), None)
         if movie:
+            plex_tag = " 📀" if plex_availability and plex_availability.get(movie.id) else ""
             embed.add_field(
-                name=f"{entry.emoji} {movie.display_title}",
+                name=f"{entry.emoji} {movie.display_title}{plex_tag}",
                 value=movie.notes or (movie.omdb_data or {}).get("Plot", "") or "\u200b",
                 inline=False,
             )
@@ -116,7 +137,13 @@ def poll_embed(
     return embed
 
 
-def build_calendar_content(year: int, month: int, entries: list, movies_by_id: dict) -> tuple[str, str]:
+def build_calendar_content(
+    year: int,
+    month: int,
+    entries: list,
+    movies_by_id: dict,
+    plex_availability: dict[int, bool] | None = None,
+) -> tuple[str, str]:
     """Return (ansi_code_block, legend_text) for the given month.
 
     entries must already be filtered to the target month/year.
@@ -170,7 +197,10 @@ def build_calendar_content(year: int, month: int, entries: list, movies_by_id: d
                 _e = _to_eastern(e.scheduled_for)
                 _day = _e.strftime("%d").lstrip("0") or "1"
                 date_str = _e.strftime(f"%a %b {_day}")
-                legend_lines.append(f"🎬 {date_str} — **{title}**{rating}")
+                plex_str = ""
+                if plex_availability and m and plex_availability.get(m.id):
+                    plex_str = " 📀"
+                legend_lines.append(f"🎬 {date_str} — **{title}**{rating}{plex_str}")
         legend = "\n".join(legend_lines)
     else:
         legend = "_No movies scheduled this month._"
@@ -178,9 +208,15 @@ def build_calendar_content(year: int, month: int, entries: list, movies_by_id: d
     return code_block, legend
 
 
-def build_calendar_embed(year: int, month: int, entries: list, movies_by_id: dict) -> discord.Embed:
+def build_calendar_embed(
+    year: int,
+    month: int,
+    entries: list,
+    movies_by_id: dict,
+    plex_availability: dict[int, bool] | None = None,
+) -> discord.Embed:
     """Build an ANSI calendar embed for the given month."""
-    code_block, legend = build_calendar_content(year, month, entries, movies_by_id)
+    code_block, legend = build_calendar_content(year, month, entries, movies_by_id, plex_availability)
     month_name = _calendar.month_name[month]
     embed = discord.Embed(
         title=f"📅 {month_name} {year}",
