@@ -171,6 +171,7 @@ class SQLiteStorageProvider(StorageProvider):
         image_url=None,
         omdb_data=None,
         group_name=None,
+        status=None,
     ) -> Movie:
         existing = await self.get_movie_by_title_year(title, year)
         if existing:
@@ -178,13 +179,14 @@ class SQLiteStorageProvider(StorageProvider):
 
         omdb_json = json.dumps(omdb_data) if omdb_data else None
         now = _now_iso()
+        insert_status = status or MovieStatus.STASH
         async with self._db.execute(
             """
             INSERT INTO movies (title, year, notes, apple_tv_url, image_url,
                                 added_by, added_by_id, added_at, status, omdb_data, group_name)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'stash', ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (title, year, notes, apple_tv_url, image_url, added_by, added_by_id, now, omdb_json, group_name),
+            (title, year, notes, apple_tv_url, image_url, added_by, added_by_id, now, insert_status, omdb_json, group_name),
         ) as cur:
             movie_id = cur.lastrowid
         await self._db.commit()

@@ -218,6 +218,7 @@ class GoogleSheetsStorageProvider(StorageProvider):
         image_url=None,
         omdb_data=None,
         group_name=None,
+        status=None,
     ) -> Movie:
         def _do() -> int:
             ws = self._ws("movies")
@@ -227,10 +228,11 @@ class GoogleSheetsStorageProvider(StorageProvider):
                     raise ValueError(f"{title!r} ({year}) is already in the stash (id={r[0]}).")
             new_id = _next_id(rows)
             now = _now_iso()
+            insert_status = status or MovieStatus.STASH
             ws.append_row(
                 [
                     str(new_id), title, str(year), _to_str(notes), _to_str(apple_tv_url),
-                    _to_str(image_url), added_by, added_by_id, now, MovieStatus.STASH,
+                    _to_str(image_url), added_by, added_by_id, now, insert_status,
                     _to_str(omdb_data), _to_str(group_name),
                 ],
                 value_input_option="RAW",

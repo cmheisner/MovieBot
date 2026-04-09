@@ -18,11 +18,30 @@ SCHEDULE_COLOR = discord.Color.green()
 EVENT_COLOR = discord.Color.og_blurple()
 
 
+_STATUS_LABELS = {
+    "stash": "📋 Stash",
+    "nominated": "🗳️ Nominated",
+    "scheduled": "📅 Scheduled",
+    "watched": "✅ Watched",
+    "skipped": "🗑️ Skipped",
+}
+
+
 def movie_card(movie: Movie, *, title_prefix: str = "", on_plex: bool = False) -> discord.Embed:
     embed = discord.Embed(
         title=f"{title_prefix}{movie.display_title}",
         color=STASH_COLOR,
     )
+    status_label = _STATUS_LABELS.get(movie.status, movie.status.capitalize()) if movie.status else None
+    meta_inline = []
+    if status_label:
+        meta_inline.append(("Status", status_label))
+    if movie.group_name:
+        meta_inline.append(("Season", movie.group_name))
+    for name, value in meta_inline:
+        embed.add_field(name=name, value=value, inline=True)
+    if meta_inline:
+        embed.add_field(name="\u200b", value="\u200b", inline=False)
     if movie.notes:
         embed.add_field(name="Notes", value=movie.notes, inline=False)
     if movie.apple_tv_url:

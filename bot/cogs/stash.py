@@ -22,17 +22,29 @@ STATUS_CHOICES = [
     app_commands.Choice(name="All", value="all"),
 ]
 
+ADD_STATUS_CHOICES = [
+    app_commands.Choice(name="Watched", value="watched"),
+    app_commands.Choice(name="Scheduled", value="scheduled"),
+]
+
+EDIT_STATUS_CHOICES = [
+    app_commands.Choice(name="Stash", value="stash"),
+    app_commands.Choice(name="Watched", value="watched"),
+    app_commands.Choice(name="Scheduled", value="scheduled"),
+]
+
 
 class MovieSelectView(discord.ui.View):
     """Shown when OMDB returns multiple search results and the user must pick one."""
 
     def __init__(self, results: list[dict], *, bot, interaction: discord.Interaction,
-                 notes: Optional[str], group_name: Optional[str] = None):
+                 notes: Optional[str], group_name: Optional[str] = None, status: Optional[str] = None):
         super().__init__(timeout=60)
         self.bot = bot
         self.original_interaction = interaction
         self.notes = notes
         self.group_name = group_name
+        self.status = status
 
         seen_values: set[str] = set()
         deduped = []
@@ -74,6 +86,7 @@ class MovieSelectView(discord.ui.View):
                 notes=self.notes,
                 omdb_data=omdb_data,
                 group_name=self.group_name,
+                status=self.status or MovieStatus.STASH,
             )
         except ValueError as e:
             await interaction.followup.send(f"⚠️ {e}", ephemeral=True)
@@ -83,7 +96,7 @@ class MovieSelectView(discord.ui.View):
         stash_ch = self.bot.get_channel(self.bot.get_active_channel_id(self.bot.config.stash_channel_id))
         if stash_ch and stash_ch != self.original_interaction.channel:
             await stash_ch.send(embed=embed)
-        await interaction.edit_original_response(content=f"✅ **{movie.display_title}** added to the stash.", embed=None, view=None)
+        await interaction.edit_original_response(content=None, embed=embed, view=None)
 
     async def on_timeout(self):
         try:
@@ -108,8 +121,10 @@ class StashCog(commands.Cog, name="Stash"):
         year="Release year (auto-detected from OMDB if omitted)",
         notes="Optional notes or comments",
         season="Seasonal collection to tag this movie under",
+        status="Override status (default: Stash)",
     )
     @app_commands.choices(season=SEASON_CHOICES)
+    @app_commands.choices(status=ADD_STATUS_CHOICES)
     async def stash_add(
         self,
         interaction: discord.Interaction,
@@ -117,6 +132,7 @@ class StashCog(commands.Cog, name="Stash"):
         year: int | None = None,
         notes: str | None = None,
         season: str | None = None,
+        status: str | None = None,
     ):
         await interaction.response.defer(ephemeral=True)
 
@@ -136,7 +152,7 @@ class StashCog(commands.Cog, name="Stash"):
             else:
                 view = MovieSelectView(
                     results, bot=self.bot, interaction=interaction,
-                    notes=notes, group_name=season,
+                    notes=notes, group_name=season, status=status,
                 )
                 await interaction.followup.send(
                     f"Found **{len(results)}** results for **{title}** — which one?",
@@ -156,6 +172,7 @@ class StashCog(commands.Cog, name="Stash"):
                 notes=notes,
                 omdb_data=omdb_data,
                 group_name=season,
+                status=status or MovieStatus.STASH,
             )
         except ValueError as e:
             await interaction.followup.send(f"⚠️ {e}", ephemeral=True)
@@ -165,7 +182,7 @@ class StashCog(commands.Cog, name="Stash"):
         stash_ch = self.bot.get_channel(self.bot.get_active_channel_id(self.bot.config.stash_channel_id))
         if stash_ch and stash_ch != interaction.channel:
             await stash_ch.send(embed=embed)
-        await interaction.followup.send(f"✅ **{movie.display_title}** added to the stash.", ephemeral=True)
+        await interaction.followup.send(embed=embed, ephemeral=True)
 
     # ── /stash list ───────────────────────────────────────────────────────
 
@@ -211,14 +228,16 @@ class StashCog(commands.Cog, name="Stash"):
 
     # ── /stash edit ───────────────────────────────────────────────────────
 
-    @stash.command(name="edit", description="Edit a movie's notes or seasonal group.")
+    @stash.command(name="edit", description="Edit a movie's notes, seasonal group, or status.")
     @app_commands.describe(
         title="Movie title",
         year="Release year (optional)",
         notes="New notes",
         season="New seasonal collection",
+        status="New status",
     )
     @app_commands.choices(season=SEASON_CHOICES)
+    @app_commands.choices(status=EDIT_STATUS_CHOICES)
     async def stash_edit(
         self,
         interaction: discord.Interaction,
@@ -226,6 +245,7 @@ class StashCog(commands.Cog, name="Stash"):
         year: int | None = None,
         notes: str | None = None,
         season: str | None = None,
+        status: str | None = None,
     ):
         await interaction.response.defer(ephemeral=True)
         movie = await resolve_movie(self.bot.storage, interaction, title, year)
@@ -243,6 +263,8 @@ class StashCog(commands.Cog, name="Stash"):
             updates["notes"] = notes
         if season is not None:
             updates["group_name"] = season
+        if status is not None:
+            updates["status"] = status
 
         if not updates:
             await interaction.followup.send("Nothing to update.", ephemeral=True)
