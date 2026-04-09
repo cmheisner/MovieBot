@@ -47,7 +47,6 @@ class HelpCog(commands.Cog, name="Help"):
             name="📅 Schedule",
             value=(
                 "`/schedule list` — Show upcoming movies\n"
-                "`/schedule history` — Show full schedule history\n"
                 "`/schedule add` — Manually schedule a movie\n"
                 "`/schedule remove` — Remove a scheduled movie (returns to stash)\n"
                 "`/schedule reschedule` — Move a movie to a new date\n"

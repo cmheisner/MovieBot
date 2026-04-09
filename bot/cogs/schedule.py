@@ -43,29 +43,6 @@ class ScheduleCog(commands.Cog, name="Schedule"):
         embed = schedule_embed(entries, movies_by_id, plex_availability)
         await interaction.followup.send(embed=embed)
 
-    # ── /schedule history ─────────────────────────────────────────────────
-
-    @schedule.command(name="history", description="Show all past and upcoming schedule entries.")
-    @app_commands.describe(limit="How many entries to show (default 10)")
-    async def schedule_history(
-        self,
-        interaction: discord.Interaction,
-        limit: int = 10,
-    ):
-        await interaction.response.defer()
-        entries = await self.bot.storage.list_schedule_entries(upcoming_only=False, limit=limit)
-        movies_by_id = {}
-        for e in entries:
-            m = await self.bot.storage.get_movie(e.movie_id)
-            if m:
-                movies_by_id[e.movie_id] = m
-        plex_availability = {}
-        for mid, m in movies_by_id.items():
-            plex_availability[mid] = await self.bot.plex.check_movie(m.title)
-        embed = schedule_embed(entries, movies_by_id, plex_availability)
-        embed.title = "📜 Schedule History"
-        await interaction.followup.send(embed=embed)
-
     # ── /schedule add ─────────────────────────────────────────────────────
 
     @schedule.command(name="add", description="Manually schedule a movie (bypasses poll).")

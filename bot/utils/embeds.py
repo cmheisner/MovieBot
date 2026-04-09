@@ -69,11 +69,13 @@ def movie_card(movie: Movie, *, title_prefix: str = "", on_plex: bool = False) -
     return embed
 
 
-def _movie_line(m: Movie, *, on_plex: bool = False) -> str:
+def _movie_line(m: Movie, *, on_plex: bool = False, watch_date=None) -> str:
     line = f"`{m.id}` **{m.display_title}**"
     if on_plex:
         line += " 📀"
-    if m.notes:
+    if watch_date:
+        line += f" — {format_dt_eastern(watch_date)}"
+    elif m.notes:
         line += f" — _{m.notes}_"
     return line
 
@@ -82,6 +84,7 @@ def stash_list_embed(
     movies: list[Movie],
     status_label: str = "stash",
     plex_availability: dict[int, bool] | None = None,
+    watch_dates: dict | None = None,
 ) -> discord.Embed:
     embed = discord.Embed(
         title=f"🎬 Movie Stash — {status_label.capitalize()}",
@@ -106,20 +109,23 @@ def stash_list_embed(
         sections: list[str] = []
         for season_name, group_movies in seen.items():
             block = [f"**{season_name}**"] + [
-                _movie_line(m, on_plex=bool(plex_availability and plex_availability.get(m.id)))
+                _movie_line(m, on_plex=bool(plex_availability and plex_availability.get(m.id)),
+                            watch_date=watch_dates.get(m.id) if watch_dates else None)
                 for m in group_movies
             ]
             sections.append("\n".join(block))
         if ungrouped:
             block = ["**Ungrouped**"] + [
-                _movie_line(m, on_plex=bool(plex_availability and plex_availability.get(m.id)))
+                _movie_line(m, on_plex=bool(plex_availability and plex_availability.get(m.id)),
+                            watch_date=watch_dates.get(m.id) if watch_dates else None)
                 for m in ungrouped
             ]
             sections.append("\n".join(block))
         embed.description = "\n\n".join(sections)
     else:
         embed.description = "\n".join(
-            _movie_line(m, on_plex=bool(plex_availability and plex_availability.get(m.id)))
+            _movie_line(m, on_plex=bool(plex_availability and plex_availability.get(m.id)),
+                        watch_date=watch_dates.get(m.id) if watch_dates else None)
             for m in movies
         )
 

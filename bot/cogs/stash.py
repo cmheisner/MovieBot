@@ -1,5 +1,6 @@
 from __future__ import annotations
 import logging
+from datetime import datetime
 from typing import Optional
 
 import discord
@@ -200,13 +201,19 @@ class StashCog(commands.Cog, name="Stash"):
         season: str | None = None,
     ):
         await interaction.response.defer()
-        movies = await self.bot.storage.list_movies(status=status)
+        watch_dates: dict[int, datetime] = {}
+        if status == "watched":
+            history = await self.bot.storage.list_watched_history(limit=200)
+            movies = [m for m, _ in history]
+            watch_dates = {m.id: d for m, d in history if d}
+        else:
+            movies = await self.bot.storage.list_movies(status=status)
         if season is not None:
             movies = [m for m in movies if m.season == season]
         plex_availability = {}
         for m in movies:
             plex_availability[m.id] = await self.bot.plex.check_movie(m.title)
-        embed = stash_list_embed(movies, status_label=status, plex_availability=plex_availability)
+        embed = stash_list_embed(movies, status_label=status, plex_availability=plex_availability, watch_dates=watch_dates)
         await interaction.followup.send(embed=embed)
 
     # ── /stash info ───────────────────────────────────────────────────────
@@ -296,22 +303,6 @@ class StashCog(commands.Cog, name="Stash"):
 
         await self.bot.storage.update_movie(movie.id, status=MovieStatus.SKIPPED)
         await interaction.followup.send(f"🗑️ **{movie.display_title}** removed from the stash.", ephemeral=True)
-
-    # ── /stash watched ────────────────────────────────────────────────────
-
-    @stash.command(name="watched", description="Mark a movie as watched.")
-    @app_commands.describe(title="Movie title", year="Release year (optional)")
-    async def stash_watched(
-        self,
-        interaction: discord.Interaction,
-        title: str,
-        year: int | None = None,
-    ):
-        await interaction.response.defer()
-        movie = await resolve_movie(self.bot.storage, interaction, title, year)
-        if not movie:
-            return
-        await self._mark_watched(interaction, movie)
 
     async def _mark_watched(self, interaction, movie):
         """Shared logic for marking a movie watched and cleaning up its Discord event."""
