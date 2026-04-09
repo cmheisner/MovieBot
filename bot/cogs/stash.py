@@ -38,12 +38,12 @@ class MovieSelectView(discord.ui.View):
     """Shown when OMDB returns multiple search results and the user must pick one."""
 
     def __init__(self, results: list[dict], *, bot, interaction: discord.Interaction,
-                 notes: Optional[str], group_name: Optional[str] = None, status: Optional[str] = None):
+                 notes: Optional[str], season: Optional[str] = None, status: Optional[str] = None):
         super().__init__(timeout=60)
         self.bot = bot
         self.original_interaction = interaction
         self.notes = notes
-        self.group_name = group_name
+        self.season = season
         self.status = status
 
         seen_values: set[str] = set()
@@ -85,7 +85,7 @@ class MovieSelectView(discord.ui.View):
                 added_by_id=str(self.original_interaction.user.id),
                 notes=self.notes,
                 omdb_data=omdb_data,
-                group_name=self.group_name,
+                season=self.season,
                 status=self.status or MovieStatus.STASH,
             )
         except ValueError as e:
@@ -152,7 +152,7 @@ class StashCog(commands.Cog, name="Stash"):
             else:
                 view = MovieSelectView(
                     results, bot=self.bot, interaction=interaction,
-                    notes=notes, group_name=season, status=status,
+                    notes=notes, season=season, status=status,
                 )
                 await interaction.followup.send(
                     f"Found **{len(results)}** results for **{title}** — which one?",
@@ -171,7 +171,7 @@ class StashCog(commands.Cog, name="Stash"):
                 added_by_id=str(interaction.user.id),
                 notes=notes,
                 omdb_data=omdb_data,
-                group_name=season,
+                season=season,
                 status=status or MovieStatus.STASH,
             )
         except ValueError as e:
@@ -202,7 +202,7 @@ class StashCog(commands.Cog, name="Stash"):
         await interaction.response.defer()
         movies = await self.bot.storage.list_movies(status=status)
         if season is not None:
-            movies = [m for m in movies if m.group_name == season]
+            movies = [m for m in movies if m.season == season]
         plex_availability = {}
         for m in movies:
             plex_availability[m.id] = await self.bot.plex.check_movie(m.title)
@@ -262,7 +262,7 @@ class StashCog(commands.Cog, name="Stash"):
         if notes is not None:
             updates["notes"] = notes
         if season is not None:
-            updates["group_name"] = season
+            updates["season"] = season
         if status is not None:
             updates["status"] = status
 
@@ -353,7 +353,7 @@ class StashCog(commands.Cog, name="Stash"):
                     rating = f" ⭐{r}"
             plex_str = " 📀" if await self.bot.plex.check_movie(movie.title) else ""
             date_str = f" — {format_dt_eastern(scheduled_for)}" if scheduled_for else ""
-            group_str = f" `{movie.group_name}`" if movie.group_name else ""
+            group_str = f" `{movie.season}`" if movie.season else ""
             lines.append(f"**{movie.display_title}**{rating}{plex_str}{date_str}{group_str}")
 
         embed.description = "\n".join(lines)

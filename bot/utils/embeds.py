@@ -36,8 +36,8 @@ def movie_card(movie: Movie, *, title_prefix: str = "", on_plex: bool = False) -
     meta_inline = []
     if status_label:
         meta_inline.append(("Status", status_label))
-    if movie.group_name:
-        meta_inline.append(("Season", movie.group_name))
+    if movie.season:
+        meta_inline.append(("Season", movie.season))
     for name, value in meta_inline:
         embed.add_field(name=name, value=value, inline=True)
     if meta_inline:
@@ -91,21 +91,21 @@ def stash_list_embed(
         embed.description = "_No movies found._"
         return embed
 
-    has_groups = any(m.group_name for m in movies)
+    has_groups = any(m.season for m in movies)
 
     if has_groups:
         # Preserve group order by first-seen insertion order
         seen: dict[str, list[Movie]] = {}
         ungrouped: list[Movie] = []
         for m in movies:
-            if m.group_name:
-                seen.setdefault(m.group_name, []).append(m)
+            if m.season:
+                seen.setdefault(m.season, []).append(m)
             else:
                 ungrouped.append(m)
 
         sections: list[str] = []
-        for group_name, group_movies in seen.items():
-            block = [f"**{group_name}**"] + [
+        for season_name, group_movies in seen.items():
+            block = [f"**{season_name}**"] + [
                 _movie_line(m, on_plex=bool(plex_availability and plex_availability.get(m.id)))
                 for m in group_movies
             ]

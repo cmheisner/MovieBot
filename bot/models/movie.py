@@ -25,7 +25,7 @@ class Movie:
     apple_tv_url: Optional[str] = None
     image_url: Optional[str] = None
     omdb_data: Optional[dict] = None
-    group_name: Optional[str] = None
+    season: Optional[str] = None
 
     @property
     def display_title(self) -> str:

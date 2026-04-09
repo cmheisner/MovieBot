@@ -92,7 +92,7 @@ async def main() -> None:
                 added_at     TEXT    NOT NULL,
                 status       TEXT    NOT NULL DEFAULT 'stash',
                 omdb_data    TEXT,
-                group_name   TEXT,
+                season       TEXT,
                 UNIQUE (title, year)
             )
         """)
@@ -116,7 +116,7 @@ async def main() -> None:
                 if existing:
                     # If it exists but has no group, tag it
                     await db.execute(
-                        "UPDATE movies SET group_name = ? WHERE id = ? AND group_name IS NULL",
+                        "UPDATE movies SET season = ? WHERE id = ? AND season IS NULL",
                         (GROUP, existing["id"]),
                     )
                     await db.commit()
@@ -129,7 +129,7 @@ async def main() -> None:
                 await db.execute(
                     """
                     INSERT INTO movies
-                        (title, year, added_by, added_by_id, added_at, status, omdb_data, group_name)
+                        (title, year, added_by, added_by_id, added_at, status, omdb_data, season)
                     VALUES (?, ?, ?, ?, ?, 'stash', ?, ?)
                     """,
                     (title, year, ADDED_BY, ADDED_BY_ID, now, omdb_json, GROUP),

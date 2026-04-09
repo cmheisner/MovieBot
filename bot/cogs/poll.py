@@ -149,7 +149,7 @@ class PollCog(commands.Cog, name="Poll"):
         # Season: auto-load all stash movies tagged to this season
         if season:
             all_stash = await self.bot.storage.list_movies(status=MovieStatus.STASH)
-            season_movies = [m for m in all_stash if m.group_name == season]
+            season_movies = [m for m in all_stash if m.season == season]
             if not season_movies:
                 await interaction.followup.send(
                     f"⚠️ No stash movies found tagged as **{season}**.", ephemeral=True

@@ -27,7 +27,7 @@ class StorageProvider(ABC):
         apple_tv_url: Optional[str] = None,
         image_url: Optional[str] = None,
         omdb_data: Optional[dict] = None,
-        group_name: Optional[str] = None,
+        season: Optional[str] = None,
         status: Optional[str] = None,
     ) -> Movie:
         """Insert a new movie; raises ValueError on duplicate (title, year)."""

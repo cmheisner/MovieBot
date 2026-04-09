@@ -70,15 +70,15 @@ async def main() -> None:
                 year  = int(omdb["Year"][:4]) if omdb else year
 
                 async with db.execute(
-                    "SELECT id, group_name FROM movies WHERE LOWER(title) = LOWER(?) AND year = ?",
+                    "SELECT id, season FROM movies WHERE LOWER(title) = LOWER(?) AND year = ?",
                     (title, year),
                 ) as cur:
                     existing = await cur.fetchone()
 
                 if existing:
-                    if not existing["group_name"]:
+                    if not existing["season"]:
                         await db.execute(
-                            "UPDATE movies SET group_name = ? WHERE id = ?",
+                            "UPDATE movies SET season = ? WHERE id = ?",
                             (GROUP, existing["id"]),
                         )
                         await db.commit()
@@ -91,7 +91,7 @@ async def main() -> None:
                 await db.execute(
                     """
                     INSERT INTO movies
-                        (title, year, added_by, added_by_id, added_at, status, omdb_data, group_name)
+                        (title, year, added_by, added_by_id, added_at, status, omdb_data, season)
                     VALUES (?, ?, ?, ?, ?, 'stash', ?, ?)
                     """,
                     (title, year, ADDED_BY, ADDED_BY_ID, now, omdb_json, GROUP),

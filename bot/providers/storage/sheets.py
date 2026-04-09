@@ -18,7 +18,7 @@ SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
 MOVIE_COLS = [
     "id", "title", "year", "notes", "apple_tv_url", "image_url",
-    "added_by", "added_by_id", "added_at", "status", "omdb_data", "group_name",
+    "added_by", "added_by_id", "added_at", "status", "omdb_data", "season",
 ]
 POLL_COLS = ["id", "discord_msg_id", "channel_id", "created_at", "closes_at", "closed_at", "status", "target_date"]
 ENTRY_COLS = ["id", "poll_id", "movie_id", "position", "emoji"]
@@ -96,7 +96,7 @@ def _row_to_movie(r: list[str]) -> Movie:
         added_at=_parse_dt(r[8]),
         status=r[9],
         omdb_data=omdb,
-        group_name=_opt(r[11]) if len(r) > 11 else None,
+        season=_opt(r[11]) if len(r) > 11 else None,
     )
 
 
@@ -217,7 +217,7 @@ class GoogleSheetsStorageProvider(StorageProvider):
         apple_tv_url=None,
         image_url=None,
         omdb_data=None,
-        group_name=None,
+        season=None,
         status=None,
     ) -> Movie:
         def _do() -> int:
@@ -233,7 +233,7 @@ class GoogleSheetsStorageProvider(StorageProvider):
                 [
                     str(new_id), title, str(year), _to_str(notes), _to_str(apple_tv_url),
                     _to_str(image_url), added_by, added_by_id, now, insert_status,
-                    _to_str(omdb_data), _to_str(group_name),
+                    _to_str(omdb_data), _to_str(season),
                 ],
                 value_input_option="RAW",
             )
@@ -291,7 +291,7 @@ class GoogleSheetsStorageProvider(StorageProvider):
         return await asyncio.to_thread(_do)
 
     async def update_movie(self, movie_id: int, **fields) -> Movie:
-        allowed = {"title", "year", "notes", "apple_tv_url", "image_url", "status", "omdb_data", "group_name"}
+        allowed = {"title", "year", "notes", "apple_tv_url", "image_url", "status", "omdb_data", "season"}
         update_fields = {k: v for k, v in fields.items() if k in allowed}
         if "omdb_data" in update_fields and isinstance(update_fields["omdb_data"], dict):
             update_fields["omdb_data"] = json.dumps(update_fields["omdb_data"])

@@ -19,7 +19,7 @@ SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
 MOVIE_COLS = [
     "id", "title", "year", "notes", "apple_tv_url", "image_url",
-    "added_by", "added_by_id", "added_at", "status", "omdb_data", "group_name",
+    "added_by", "added_by_id", "added_at", "status", "omdb_data", "season",
 ]
 SCHEDULE_COLS = [
     "id", "movie_id", "poll_id", "scheduled_for",
@@ -47,12 +47,12 @@ def edt(year, month, day, hour, minute):
 def iso(dt):
     return dt.isoformat()
 
-def movie_row(movie_id, title, year, status, group_name="", added_at=None):
+def movie_row(movie_id, title, year, status, season="", added_at=None):
     return [
         str(movie_id), title, str(year), "", "", "",
         SEED_USER, SEED_USER_ID,
         added_at or NOW,
-        status, "", group_name,
+        status, "", season,
     ]
 
 def schedule_row(entry_id, movie_id, scheduled_for_dt):
@@ -87,7 +87,7 @@ HISTORY = [
     ("One Flew Over the Cuckoo's Nest", 1975, edt(2026, 3, 24, 22, 30)),
 ]
 
-# Each schedule entry: (title, year, scheduled_datetime_utc, group_name)
+# Each schedule entry: (title, year, scheduled_datetime_utc, season)
 SCHEDULE = [
     ("The Greasy Strangler",                        2016, edt(2026,  3, 25, 22, 30), ""),
     ("Dawn of the Dead",                            2004, edt(2026,  3, 26, 22, 30), ""),
@@ -118,8 +118,8 @@ SCHEDULE = [
     ("Class of Nuke 'Em High",                      1986, edt(2026,  9, 23, 22, 30), ""),
 ]
 
-# Stash entries: (title, year, group_name)
-# Movies already in SCHEDULE with a group_name are skipped here to avoid duplicates.
+# Stash entries: (title, year, season)
+# Movies already in SCHEDULE with a season are skipped here to avoid duplicates.
 _scheduled_keys = {(t.lower(), y) for t, y, *_ in SCHEDULE}
 
 STASH_SPRING = [
@@ -138,7 +138,7 @@ STASH_SUMMER = [
     ("Falling Down",                    1993),
     ("American History X",              1998),
     ("Fight Club",                      1999),
-    # Furiosa and Talladega Nights are in SCHEDULE with group_name="This Summer" — skip here
+    # Furiosa and Talladega Nights are in SCHEDULE with season="This Summer" — skip here
     ("Tremors",                         1990),
     ("Tremors II: Aftershocks",         1996),
     ("Tremors 3: Back to Perfection",   2001),
@@ -220,20 +220,20 @@ for title, year, watch_dt in HISTORY:
 # 2. Scheduled
 print(f"Building {len(SCHEDULE)} scheduled movies...")
 for title, year, sched_dt, group in SCHEDULE:
-    movie_rows.append(movie_row(movie_id, title, year, "scheduled", group_name=group))
+    movie_rows.append(movie_row(movie_id, title, year, "scheduled", season=group))
     sched_rows.append(schedule_row(sched_id, movie_id, sched_dt))
     movie_id += 1
     sched_id += 1
 
 # 3. Stash
-def add_stash(items, group_name):
+def add_stash(items, season):
     global movie_id
     for title, year in items:
         key = (title.lower(), year)
         if key in _scheduled_keys:
             print(f"  Skipping '{title}' ({year}) — already in schedule.")
             continue
-        movie_rows.append(movie_row(movie_id, title, year, "stash", group_name=group_name))
+        movie_rows.append(movie_row(movie_id, title, year, "stash", season=season))
         movie_id += 1
 
 print("Building stash movies...")

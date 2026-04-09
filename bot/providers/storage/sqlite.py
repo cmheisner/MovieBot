@@ -28,7 +28,7 @@ CREATE TABLE IF NOT EXISTS movies (
     added_at     TEXT    NOT NULL,
     status       TEXT    NOT NULL DEFAULT 'stash',
     omdb_data    TEXT,
-    group_name   TEXT,
+    season       TEXT,
     UNIQUE (title, year)
 );
 
@@ -99,7 +99,7 @@ def _row_to_movie(row: aiosqlite.Row) -> Movie:
         apple_tv_url=row["apple_tv_url"],
         image_url=row["image_url"],
         omdb_data=omdb,
-        group_name=row["group_name"],
+        season=row["season"],
     )
 
 
@@ -141,9 +141,15 @@ class SQLiteStorageProvider(StorageProvider):
         self._db.row_factory = aiosqlite.Row
         await self._db.executescript(SCHEMA)
         await self._db.commit()
-        # Migration: add group_name column if it doesn't exist yet
+        # Migration: rename group_name -> season for existing databases
         try:
-            await self._db.execute("ALTER TABLE movies ADD COLUMN group_name TEXT")
+            await self._db.execute("ALTER TABLE movies RENAME COLUMN group_name TO season")
+            await self._db.commit()
+        except aiosqlite.OperationalError:
+            pass  # Already renamed or column doesn't exist
+        # Migration: add season column if it doesn't exist yet (fresh installs)
+        try:
+            await self._db.execute("ALTER TABLE movies ADD COLUMN season TEXT")
             await self._db.commit()
         except aiosqlite.OperationalError:
             pass  # Column already exists
@@ -170,7 +176,7 @@ class SQLiteStorageProvider(StorageProvider):
         apple_tv_url=None,
         image_url=None,
         omdb_data=None,
-        group_name=None,
+        season=None,
         status=None,
     ) -> Movie:
         existing = await self.get_movie_by_title_year(title, year)
@@ -183,10 +189,10 @@ class SQLiteStorageProvider(StorageProvider):
         async with self._db.execute(
             """
             INSERT INTO movies (title, year, notes, apple_tv_url, image_url,
-                                added_by, added_by_id, added_at, status, omdb_data, group_name)
+                                added_by, added_by_id, added_at, status, omdb_data, season)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (title, year, notes, apple_tv_url, image_url, added_by, added_by_id, now, insert_status, omdb_json, group_name),
+            (title, year, notes, apple_tv_url, image_url, added_by, added_by_id, now, insert_status, omdb_json, season),
         ) as cur:
             movie_id = cur.lastrowid
         await self._db.commit()
@@ -226,7 +232,7 @@ class SQLiteStorageProvider(StorageProvider):
         return [_row_to_movie(r) for r in rows]
 
     async def update_movie(self, movie_id: int, **fields) -> Movie:
-        allowed = {"title", "year", "notes", "apple_tv_url", "image_url", "status", "omdb_data", "group_name"}
+        allowed = {"title", "year", "notes", "apple_tv_url", "image_url", "status", "omdb_data", "season"}
         update_fields = {k: v for k, v in fields.items() if k in allowed}
         if "omdb_data" in update_fields and isinstance(update_fields["omdb_data"], dict):
             update_fields["omdb_data"] = json.dumps(update_fields["omdb_data"])

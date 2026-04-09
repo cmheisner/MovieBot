@@ -49,7 +49,7 @@ class SeasonsCog(commands.Cog, name="Seasons"):
     ):
         await interaction.response.defer()
         all_movies = await self.bot.storage.list_movies(status=status)
-        movies = [m for m in all_movies if m.group_name == season]
+        movies = [m for m in all_movies if m.season == season]
 
         embed = stash_list_embed(movies, status_label=season)
         embed.title = f"🗓️ {season} — {status.capitalize()}"
@@ -80,7 +80,7 @@ class SeasonsCog(commands.Cog, name="Seasons"):
         movie = await resolve_movie(self.bot.storage, interaction, title, year)
         if not movie:
             return
-        movie = await self.bot.storage.update_movie(movie.id, group_name=season)
+        movie = await self.bot.storage.update_movie(movie.id, season=season)
         await interaction.followup.send(
             f"✅ **{movie.display_title}** tagged as **{season}**.",
             ephemeral=True,
@@ -99,9 +99,9 @@ class SeasonsCog(commands.Cog, name="Seasons"):
         # Collect counts per group
         groups: dict[str, dict[str, int]] = {}
         for m in all_movies:
-            if not m.group_name:
+            if not m.season:
                 continue
-            g = groups.setdefault(m.group_name, {"stash": 0, "scheduled": 0, "watched": 0, "other": 0})
+            g = groups.setdefault(m.season, {"stash": 0, "scheduled": 0, "watched": 0, "other": 0})
             if m.status in g:
                 g[m.status] += 1
             else:
@@ -117,8 +117,8 @@ class SeasonsCog(commands.Cog, name="Seasons"):
         defined = [c.value for c in SEASON_CHOICES]
         ordered = defined + [g for g in groups if g not in defined]
 
-        for group_name in ordered:
-            counts = groups[group_name]
+        for season_name in ordered:
+            counts = groups[season_name]
             total = sum(counts.values())
             parts = []
             if counts["watched"]:
@@ -128,7 +128,7 @@ class SeasonsCog(commands.Cog, name="Seasons"):
             if counts["stash"]:
                 parts.append(f"🎬 {counts['stash']} in stash")
             embed.add_field(
-                name=f"{group_name} ({total})",
+                name=f"{season_name} ({total})",
                 value=" · ".join(parts) or "0 movies",
                 inline=False,
             )
