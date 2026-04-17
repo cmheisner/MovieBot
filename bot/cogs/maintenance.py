@@ -247,7 +247,7 @@ class MaintenanceCog(commands.Cog):
                     continue
 
                 guild = self.bot.get_guild(self.bot.config.guild_id)
-                role_mentions = build_role_mention_string(guild, movie.omdb_data) if guild else ""
+                role_mentions = build_role_mention_string(guild, movie) if guild else ""
 
                 await news_ch.send(
                     f"🍿 **Movie Night starts in 30 minutes!** {role_mentions}Tonight we're watching "
@@ -588,7 +588,7 @@ class MaintenanceCog(commands.Cog):
             log.warning("News announcement: #news channel not configured or not found.")
         else:
             guild = self.bot.get_guild(self.bot.config.guild_id)
-            role_mentions = build_role_mention_string(guild, movie.omdb_data) if guild else ""
+            role_mentions = build_role_mention_string(guild, movie) if guild else ""
 
             date_str = format_dt_eastern(scheduled_for)
             msg = f"{role_mentions}🎬 **{movie.display_title}** has been added to Movie Night! Scheduled for **{date_str}**."

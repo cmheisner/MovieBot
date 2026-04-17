@@ -1,10 +1,11 @@
 from __future__ import annotations
 import re
-from typing import Optional
+from typing import Iterable, Optional
 
 import discord
+from discord import app_commands
 
-from bot.models.movie import Movie
+from bot.models.movie import Movie, MovieStatus
 
 _YEAR_SUFFIX_RE = re.compile(r'^(.+?)\s*\((\d{4})\)\s*$')
 
@@ -54,3 +55,42 @@ async def resolve_movie(
         ephemeral=True,
     )
     return None
+
+
+async def resolve_movie_by_id(storage, interaction: discord.Interaction, movie_ref: str) -> Optional[Movie]:
+    """Resolve a movie from either a numeric id (from autocomplete) or a title fallback."""
+    if movie_ref.isdigit():
+        movie = await storage.get_movie(int(movie_ref))
+        if not movie:
+            await interaction.followup.send(f"⚠️ Movie id={movie_ref} not found.", ephemeral=True)
+        return movie
+    return await resolve_movie(storage, interaction, movie_ref, None)
+
+
+async def autocomplete_movies(
+    interaction: discord.Interaction,
+    current: str,
+    statuses: Iterable[str],
+) -> list[app_commands.Choice[str]]:
+    """Return movies filtered by status, matching `current` in title."""
+    try:
+        storage = interaction.client.storage
+        results: list[Movie] = []
+        for status in statuses:
+            results.extend(await storage.list_movies(status=status))
+    except Exception:
+        return []
+    current_lower = current.lower()
+    seen: set[int] = set()
+    unique: list[Movie] = []
+    for m in results:
+        if m.id in seen:
+            continue
+        seen.add(m.id)
+        if current_lower in m.title.lower():
+            unique.append(m)
+    unique = unique[:25]
+    return [
+        app_commands.Choice(name=m.display_title[:100], value=str(m.id))
+        for m in unique
+    ]

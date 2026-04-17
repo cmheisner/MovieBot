@@ -25,6 +25,7 @@ class BotConfig:
     plex_url: str = ""
     plex_token: str = ""
     plex_library_section_id: str = "1"
+    staff_role_id: int = 1451058938094031020
 
     @classmethod
     def from_env(cls) -> "BotConfig":
@@ -53,4 +54,5 @@ class BotConfig:
             plex_url=os.environ.get("PLEX_URL", ""),
             plex_token=os.environ.get("PLEX_TOKEN", ""),
             plex_library_section_id=os.environ.get("PLEX_LIBRARY_SECTION_ID", "1"),
+            staff_role_id=int(os.environ.get("STAFF_ROLE_ID", "1451058938094031020")),
         )

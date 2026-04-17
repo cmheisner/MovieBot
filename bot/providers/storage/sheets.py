@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import time
 from datetime import datetime, timezone
 from typing import Optional
@@ -9,25 +10,32 @@ from typing import Optional
 import gspread
 from google.oauth2.service_account import Credentials
 
-from bot.models.movie import Movie, MovieStatus
+from bot.models.movie import Movie, MovieStatus, TAG_NAMES, empty_tags
 from bot.models.poll import Poll, PollEntry
 from bot.models.schedule_entry import ScheduleEntry
 from bot.providers.storage.base import StorageProvider
 
+log = logging.getLogger(__name__)
+
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
-MOVIE_COLS = [
-    "id", "title", "year", "notes", "apple_tv_url", "image_url",
-    "added_by", "added_by_id", "added_at", "status", "omdb_data", "season",
+# Default headers — used only when creating a new sheet from scratch.
+# When the sheet already exists, whatever headers the user has are trusted.
+DEFAULT_MOVIE_HEADERS = [
+    "id", "title", "year", "notes", "status",
+    "apple_tv_url", "image_url", "added_by", "added_by_id", "added_at", "omdb_data",
+    "season", *TAG_NAMES,
 ]
-POLL_COLS = ["id", "discord_msg_id", "channel_id", "created_at", "closes_at", "closed_at", "status", "target_date"]
-ENTRY_COLS = ["id", "poll_id", "movie_id", "position", "emoji"]
-SCHEDULE_COLS = ["id", "movie_id", "poll_id", "scheduled_for", "discord_event_id", "posted_msg_id", "created_at"]
-TZ_COLS = ["user_id", "tz_name"]
-
-_MOVIE_COL = {col: idx for idx, col in enumerate(MOVIE_COLS)}
-_POLL_COL = {col: idx for idx, col in enumerate(POLL_COLS)}
-_SCHEDULE_COL = {col: idx for idx, col in enumerate(SCHEDULE_COLS)}
+DEFAULT_POLL_HEADERS = [
+    "id", "discord_msg_id", "channel_id", "created_at", "closes_at",
+    "closed_at", "status", "target_date",
+]
+DEFAULT_POLL_ENTRY_HEADERS = ["id", "poll_id", "movie_id", "position", "emoji"]
+DEFAULT_SCHEDULE_HEADERS = [
+    "id", "movie_id", "poll_id", "scheduled_for", "discord_event_id",
+    "posted_msg_id", "created_at",
+]
+DEFAULT_TZ_HEADERS = ["user_id", "tz_name"]
 
 _CACHE_TTL = 60  # seconds — direct Sheets edits are visible within this window
 
@@ -58,6 +66,8 @@ def _now_iso() -> str:
 def _to_str(val) -> str:
     if val is None:
         return ""
+    if isinstance(val, bool):
+        return "TRUE" if val else "FALSE"
     if isinstance(val, datetime):
         return val.isoformat()
     if isinstance(val, dict):
@@ -77,63 +87,8 @@ def _parse_int(s: str) -> Optional[int]:
     return int(s) if s else None
 
 
-def _next_id(rows: list[list[str]]) -> int:
-    ids = [int(r[0]) for r in rows if r and r[0].isdigit()]
-    return max(ids) + 1 if ids else 1
-
-
-def _row_to_movie(r: list[str]) -> Movie:
-    omdb = json.loads(r[10]) if r[10] else None
-    return Movie(
-        id=int(r[0]),
-        title=r[1],
-        year=int(r[2]),
-        notes=_opt(r[3]),
-        apple_tv_url=_opt(r[4]),
-        image_url=_opt(r[5]),
-        added_by=r[6],
-        added_by_id=r[7],
-        added_at=_parse_dt(r[8]),
-        status=r[9],
-        omdb_data=omdb,
-        season=_opt(r[11]) if len(r) > 11 else None,
-    )
-
-
-def _row_to_poll(r: list[str], entries: list[PollEntry]) -> Poll:
-    return Poll(
-        id=int(r[0]),
-        discord_msg_id=r[1],
-        channel_id=r[2],
-        created_at=_parse_dt(r[3]),
-        closes_at=_parse_dt(r[4]),
-        closed_at=_parse_dt(r[5]),
-        status=r[6],
-        entries=entries,
-        target_date=_parse_dt(r[7]) if len(r) > 7 else None,
-    )
-
-
-def _row_to_poll_entry(r: list[str]) -> PollEntry:
-    return PollEntry(
-        id=int(r[0]),
-        poll_id=int(r[1]),
-        movie_id=int(r[2]),
-        position=int(r[3]),
-        emoji=r[4],
-    )
-
-
-def _row_to_schedule_entry(r: list[str]) -> ScheduleEntry:
-    return ScheduleEntry(
-        id=int(r[0]),
-        movie_id=int(r[1]),
-        poll_id=_parse_int(r[2]),
-        scheduled_for=_parse_dt(r[3]),
-        discord_event_id=_opt(r[4]),
-        posted_msg_id=_opt(r[5]),
-        created_at=_parse_dt(r[6]),
-    )
+def _is_true(val: str) -> bool:
+    return str(val).strip().upper() in ("TRUE", "YES", "1", "✓")
 
 
 class GoogleSheetsStorageProvider(StorageProvider):
@@ -149,19 +104,30 @@ class GoogleSheetsStorageProvider(StorageProvider):
         self._credentials_json = credentials_json
         self._ss: Optional[gspread.Spreadsheet] = None
         self._cache = _SheetCache()
+        # name -> {header_name: 0-based column index}
+        self._cols: dict[str, dict[str, int]] = {}
+        # name -> total header count (row width to preserve on writes)
+        self._widths: dict[str, int] = {}
 
     # ── Init ─────────────────────────────────────────────────────────────
 
-    def _ensure_sheet(self, title: str, headers: list[str]) -> gspread.Worksheet:
+    def _ensure_sheet(self, title: str, default_headers: list[str]) -> gspread.Worksheet:
         try:
             ws = self._ss.worksheet(title)
         except gspread.WorksheetNotFound:
-            ws = self._ss.add_worksheet(title=title, rows=1000, cols=len(headers))
-            ws.append_row(headers, value_input_option="RAW")
-        else:
-            if not ws.row_values(1):
-                ws.append_row(headers, value_input_option="RAW")
+            ws = self._ss.add_worksheet(title=title, rows=1000, cols=max(len(default_headers), 26))
+            ws.append_row(default_headers, value_input_option="RAW")
+            return ws
+        # Sheet exists — if header row is empty, seed with defaults; otherwise trust the user.
+        existing = ws.row_values(1)
+        if not existing:
+            ws.append_row(default_headers, value_input_option="RAW")
         return ws
+
+    def _load_header_map(self, name: str) -> None:
+        headers = self._ws(name).row_values(1)
+        self._cols[name] = {h.strip(): i for i, h in enumerate(headers) if h.strip()}
+        self._widths[name] = len(headers)
 
     async def initialize(self) -> None:
         def _init():
@@ -172,11 +138,14 @@ class GoogleSheetsStorageProvider(StorageProvider):
                 creds = Credentials.from_service_account_file(self._credentials_path, scopes=SCOPES)
             gc = gspread.authorize(creds)
             self._ss = gc.open_by_key(self._spreadsheet_id)
-            self._ensure_sheet("movies", MOVIE_COLS)
-            self._ensure_sheet("polls", POLL_COLS)
-            self._ensure_sheet("poll_entries", ENTRY_COLS)
-            self._ensure_sheet("schedule_entries", SCHEDULE_COLS)
-            self._ensure_sheet("user_timezones", TZ_COLS)
+            self._ensure_sheet("movies", DEFAULT_MOVIE_HEADERS)
+            self._ensure_sheet("polls", DEFAULT_POLL_HEADERS)
+            self._ensure_sheet("poll_entries", DEFAULT_POLL_ENTRY_HEADERS)
+            self._ensure_sheet("schedule_entries", DEFAULT_SCHEDULE_HEADERS)
+            self._ensure_sheet("user_timezones", DEFAULT_TZ_HEADERS)
+            for name in ("movies", "polls", "poll_entries", "schedule_entries", "user_timezones"):
+                self._load_header_map(name)
+            log.info("Sheets: loaded header maps: %s", {k: list(v.keys()) for k, v in self._cols.items()})
 
         await asyncio.to_thread(_init)
 
@@ -197,13 +166,107 @@ class GoogleSheetsStorageProvider(StorageProvider):
         self._cache.put(name, rows)
         return rows
 
-    def _find_row_idx(self, ws: gspread.Worksheet, id_val: int) -> Optional[int]:
+    def _get(self, row: list[str], sheet: str, col: str, default: str = "") -> str:
+        """Read a cell by header name; returns default if the column is absent or row too short."""
+        idx = self._cols.get(sheet, {}).get(col)
+        if idx is None or idx >= len(row):
+            return default
+        return row[idx]
+
+    def _col_idx(self, sheet: str, col: str) -> Optional[int]:
+        """Return the 1-based sheet column index for a header, or None if absent."""
+        idx = self._cols.get(sheet, {}).get(col)
+        return None if idx is None else idx + 1
+
+    def _pack_row(self, sheet: str, values: dict[str, object]) -> list[str]:
+        """Build a full-width row for a sheet, placing values at their header columns."""
+        width = self._widths.get(sheet, 0)
+        row = [""] * width
+        col_map = self._cols.get(sheet, {})
+        for key, val in values.items():
+            idx = col_map.get(key)
+            if idx is None:
+                continue
+            if idx >= width:
+                row.extend([""] * (idx - width + 1))
+                width = idx + 1
+            row[idx] = _to_str(val)
+        return row
+
+    def _find_row_idx(self, ws: gspread.Worksheet, id_val: int, sheet: str) -> Optional[int]:
         """Return 1-based sheet row index for the row with id == id_val, or None."""
+        id_col = self._cols.get(sheet, {}).get("id", 0)
         all_rows = ws.get_all_values()
         for i, r in enumerate(all_rows[1:], start=2):
-            if r and r[0] == str(id_val):
+            if r and id_col < len(r) and r[id_col] == str(id_val):
                 return i
         return None
+
+    def _next_id(self, sheet: str, rows: list[list[str]]) -> int:
+        id_col = self._cols.get(sheet, {}).get("id", 0)
+        ids = [
+            int(r[id_col])
+            for r in rows
+            if r and id_col < len(r) and r[id_col].isdigit()
+        ]
+        return max(ids) + 1 if ids else 1
+
+    # ── Row converters ───────────────────────────────────────────────────
+
+    def _row_to_movie(self, r: list[str]) -> Movie:
+        omdb_raw = self._get(r, "movies", "omdb_data")
+        omdb = json.loads(omdb_raw) if omdb_raw else None
+        tags = empty_tags()
+        for name in TAG_NAMES:
+            tags[name] = _is_true(self._get(r, "movies", name))
+        return Movie(
+            id=int(self._get(r, "movies", "id") or 0),
+            title=self._get(r, "movies", "title"),
+            year=int(self._get(r, "movies", "year") or 0),
+            notes=_opt(self._get(r, "movies", "notes")),
+            apple_tv_url=_opt(self._get(r, "movies", "apple_tv_url")),
+            image_url=_opt(self._get(r, "movies", "image_url")),
+            added_by=self._get(r, "movies", "added_by"),
+            added_by_id=self._get(r, "movies", "added_by_id"),
+            added_at=_parse_dt(self._get(r, "movies", "added_at")),
+            status=self._get(r, "movies", "status") or MovieStatus.STASH,
+            omdb_data=omdb,
+            season=_opt(self._get(r, "movies", "season")),
+            tags=tags,
+        )
+
+    def _row_to_poll(self, r: list[str], entries: list[PollEntry]) -> Poll:
+        return Poll(
+            id=int(self._get(r, "polls", "id") or 0),
+            discord_msg_id=self._get(r, "polls", "discord_msg_id"),
+            channel_id=self._get(r, "polls", "channel_id"),
+            created_at=_parse_dt(self._get(r, "polls", "created_at")),
+            closes_at=_parse_dt(self._get(r, "polls", "closes_at")),
+            closed_at=_parse_dt(self._get(r, "polls", "closed_at")),
+            status=self._get(r, "polls", "status") or "open",
+            entries=entries,
+            target_date=_parse_dt(self._get(r, "polls", "target_date")),
+        )
+
+    def _row_to_poll_entry(self, r: list[str]) -> PollEntry:
+        return PollEntry(
+            id=int(self._get(r, "poll_entries", "id") or 0),
+            poll_id=int(self._get(r, "poll_entries", "poll_id") or 0),
+            movie_id=int(self._get(r, "poll_entries", "movie_id") or 0),
+            position=int(self._get(r, "poll_entries", "position") or 0),
+            emoji=self._get(r, "poll_entries", "emoji"),
+        )
+
+    def _row_to_schedule_entry(self, r: list[str]) -> ScheduleEntry:
+        return ScheduleEntry(
+            id=int(self._get(r, "schedule_entries", "id") or 0),
+            movie_id=int(self._get(r, "schedule_entries", "movie_id") or 0),
+            poll_id=_parse_int(self._get(r, "schedule_entries", "poll_id")),
+            scheduled_for=_parse_dt(self._get(r, "schedule_entries", "scheduled_for")),
+            discord_event_id=_opt(self._get(r, "schedule_entries", "discord_event_id")),
+            posted_msg_id=_opt(self._get(r, "schedule_entries", "posted_msg_id")),
+            created_at=_parse_dt(self._get(r, "schedule_entries", "created_at")),
+        )
 
     # ── Movies ──────────────────────────────────────────────────────────
 
@@ -219,24 +282,46 @@ class GoogleSheetsStorageProvider(StorageProvider):
         omdb_data=None,
         season=None,
         status=None,
+        tags: Optional[dict[str, bool]] = None,
     ) -> Movie:
         def _do() -> int:
             ws = self._ws("movies")
             rows = ws.get_all_values()[1:]
-            for r in rows:
-                if r[1].lower() == title.lower() and r[2] == str(year):
-                    raise ValueError(f"{title!r} ({year}) is already in the stash (id={r[0]}).")
-            new_id = _next_id(rows)
+            title_col = self._cols["movies"].get("title")
+            year_col = self._cols["movies"].get("year")
+            if title_col is not None and year_col is not None:
+                for r in rows:
+                    if (
+                        title_col < len(r)
+                        and year_col < len(r)
+                        and r[title_col].lower() == title.lower()
+                        and r[year_col] == str(year)
+                    ):
+                        raise ValueError(
+                            f"{title!r} ({year}) is already in the stash (id={r[self._cols['movies']['id']]})."
+                        )
+            new_id = self._next_id("movies", rows)
             now = _now_iso()
-            insert_status = status or MovieStatus.STASH
-            ws.append_row(
-                [
-                    str(new_id), title, str(year), _to_str(notes), _to_str(apple_tv_url),
-                    _to_str(image_url), added_by, added_by_id, now, insert_status,
-                    _to_str(omdb_data), _to_str(season),
-                ],
-                value_input_option="RAW",
-            )
+            tag_vals = tags or empty_tags()
+            values = {
+                "id": new_id,
+                "title": title,
+                "year": year,
+                "notes": notes,
+                "apple_tv_url": apple_tv_url,
+                "image_url": image_url,
+                "added_by": added_by,
+                "added_by_id": added_by_id,
+                "added_at": now,
+                "status": status or MovieStatus.STASH,
+                "omdb_data": omdb_data,
+                "season": season,
+            }
+            for name in TAG_NAMES:
+                values[name] = tag_vals.get(name, False)
+            row = self._pack_row("movies", values)
+            # Use USER_ENTERED so "TRUE"/"FALSE" become proper checkbox states.
+            ws.append_row(row, value_input_option="USER_ENTERED")
             self._cache.drop("movies")
             return new_id
 
@@ -245,29 +330,47 @@ class GoogleSheetsStorageProvider(StorageProvider):
 
     async def get_movie(self, movie_id: int) -> Optional[Movie]:
         def _do():
+            id_col = self._cols["movies"].get("id", 0)
             for r in self._rows("movies"):
-                if r and r[0] == str(movie_id):
-                    return _row_to_movie(r)
+                if r and id_col < len(r) and r[id_col] == str(movie_id):
+                    return self._row_to_movie(r)
             return None
 
         return await asyncio.to_thread(_do)
 
     async def get_movie_by_title_year(self, title: str, year: int) -> Optional[Movie]:
         def _do():
+            title_col = self._cols["movies"].get("title")
+            year_col = self._cols["movies"].get("year")
+            if title_col is None or year_col is None:
+                return None
             for r in self._rows("movies"):
-                if r and r[1].lower() == title.lower() and r[2] == str(year):
-                    return _row_to_movie(r)
+                if (
+                    r
+                    and title_col < len(r) and year_col < len(r)
+                    and r[title_col].lower() == title.lower()
+                    and r[year_col] == str(year)
+                ):
+                    return self._row_to_movie(r)
             return None
 
         return await asyncio.to_thread(_do)
 
     async def get_movies_by_title(self, title: str) -> list[Movie]:
         def _do():
-            result = [
-                _row_to_movie(r)
-                for r in self._rows("movies")
-                if r and r[1].lower() == title.lower() and r[9] != MovieStatus.SKIPPED
-            ]
+            title_col = self._cols["movies"].get("title")
+            status_col = self._cols["movies"].get("status")
+            if title_col is None:
+                return []
+            result = []
+            for r in self._rows("movies"):
+                if not r or title_col >= len(r):
+                    continue
+                if r[title_col].lower() != title.lower():
+                    continue
+                if status_col is not None and status_col < len(r) and r[status_col] == MovieStatus.SKIPPED:
+                    continue
+                result.append(self._row_to_movie(r))
             result.sort(key=lambda m: m.year, reverse=True)
             return result
 
@@ -275,35 +378,48 @@ class GoogleSheetsStorageProvider(StorageProvider):
 
     async def list_movies(self, status: Optional[str] = None) -> list[Movie]:
         def _do():
+            id_col = self._cols["movies"].get("id", 0)
+            status_col = self._cols["movies"].get("status")
             result = []
             for r in self._rows("movies"):
-                if not r or not r[0]:
+                if not r or id_col >= len(r) or not r[id_col]:
                     continue
+                row_status = r[status_col] if (status_col is not None and status_col < len(r)) else ""
                 if status and status != "all":
-                    if r[9] == status:
-                        result.append(_row_to_movie(r))
+                    if row_status == status:
+                        result.append(self._row_to_movie(r))
                 else:
-                    if r[9] != MovieStatus.SKIPPED:
-                        result.append(_row_to_movie(r))
-            result.sort(key=lambda m: m.added_at)
+                    if row_status != MovieStatus.SKIPPED:
+                        result.append(self._row_to_movie(r))
+            result.sort(key=lambda m: m.added_at or datetime.min.replace(tzinfo=timezone.utc))
             return result
 
         return await asyncio.to_thread(_do)
 
     async def update_movie(self, movie_id: int, **fields) -> Movie:
-        allowed = {"title", "year", "notes", "apple_tv_url", "image_url", "status", "omdb_data", "season"}
+        allowed = {"title", "year", "notes", "apple_tv_url", "image_url", "status", "omdb_data", "season", "tags"}
         update_fields = {k: v for k, v in fields.items() if k in allowed}
+
+        # Flatten tags dict into per-column updates.
+        tag_updates = update_fields.pop("tags", None)
+        if tag_updates:
+            for name in TAG_NAMES:
+                if name in tag_updates:
+                    update_fields[name] = tag_updates[name]
+
         if "omdb_data" in update_fields and isinstance(update_fields["omdb_data"], dict):
             update_fields["omdb_data"] = json.dumps(update_fields["omdb_data"])
 
         def _do():
             ws = self._ws("movies")
-            row_idx = self._find_row_idx(ws, movie_id)
+            row_idx = self._find_row_idx(ws, movie_id, "movies")
             if row_idx is None:
                 raise ValueError(f"Movie id={movie_id} not found.")
             for field_name, value in update_fields.items():
-                col_idx = _MOVIE_COL[field_name] + 1  # gspread is 1-indexed
-                ws.update_cell(row_idx, col_idx, _to_str(value))
+                col = self._col_idx("movies", field_name)
+                if col is None:
+                    continue  # column not present in sheet — silently skip
+                ws.update_cell(row_idx, col, _to_str(value))
             self._cache.drop("movies")
 
         await asyncio.to_thread(_do)
@@ -325,18 +441,29 @@ class GoogleSheetsStorageProvider(StorageProvider):
             ws_entries = self._ws("poll_entries")
             poll_rows = ws_polls.get_all_values()[1:]
             entry_rows = ws_entries.get_all_values()[1:]
-            poll_id = _next_id(poll_rows)
-            entry_id = _next_id(entry_rows)
+            poll_id = self._next_id("polls", poll_rows)
+            entry_id = self._next_id("poll_entries", entry_rows)
             now = _now_iso()
-            ws_polls.append_row(
-                [str(poll_id), discord_msg_id, channel_id, now, _to_str(closes_at), "", "open", _to_str(target_date)],
-                value_input_option="RAW",
-            )
+            poll_values = {
+                "id": poll_id,
+                "discord_msg_id": discord_msg_id,
+                "channel_id": channel_id,
+                "created_at": now,
+                "closes_at": closes_at,
+                "closed_at": "",
+                "status": "open",
+                "target_date": target_date,
+            }
+            ws_polls.append_row(self._pack_row("polls", poll_values), value_input_option="RAW")
             for pos, (movie_id, emoji) in enumerate(zip(movie_ids, emojis), start=1):
-                ws_entries.append_row(
-                    [str(entry_id), str(poll_id), str(movie_id), str(pos), emoji],
-                    value_input_option="RAW",
-                )
+                entry_values = {
+                    "id": entry_id,
+                    "poll_id": poll_id,
+                    "movie_id": movie_id,
+                    "position": pos,
+                    "emoji": emoji,
+                }
+                ws_entries.append_row(self._pack_row("poll_entries", entry_values), value_input_option="RAW")
                 entry_id += 1
             self._cache.drop("polls")
             self._cache.drop("poll_entries")
@@ -346,43 +473,61 @@ class GoogleSheetsStorageProvider(StorageProvider):
         return await self.get_poll(poll_id)
 
     def _get_entries_sync(self, poll_id: int) -> list[PollEntry]:
+        poll_id_col = self._cols["poll_entries"].get("poll_id")
+        if poll_id_col is None:
+            return []
         entries = [
-            _row_to_poll_entry(r)
+            self._row_to_poll_entry(r)
             for r in self._rows("poll_entries")
-            if r and r[1] == str(poll_id)
+            if r and poll_id_col < len(r) and r[poll_id_col] == str(poll_id)
         ]
         entries.sort(key=lambda e: e.position)
         return entries
 
     async def get_poll(self, poll_id: int) -> Optional[Poll]:
         def _do():
+            id_col = self._cols["polls"].get("id", 0)
             for r in self._rows("polls"):
-                if r and r[0] == str(poll_id):
-                    return _row_to_poll(r, self._get_entries_sync(poll_id))
+                if r and id_col < len(r) and r[id_col] == str(poll_id):
+                    return self._row_to_poll(r, self._get_entries_sync(poll_id))
             return None
 
         return await asyncio.to_thread(_do)
 
     async def get_latest_open_poll(self) -> Optional[Poll]:
         def _do():
-            open_polls = [r for r in self._rows("polls") if r and r[6] == "open"]
+            status_col = self._cols["polls"].get("status")
+            created_col = self._cols["polls"].get("created_at")
+            id_col = self._cols["polls"].get("id", 0)
+            if status_col is None:
+                return None
+            open_polls = [
+                r for r in self._rows("polls")
+                if r and status_col < len(r) and r[status_col] == "open"
+            ]
             if not open_polls:
                 return None
-            open_polls.sort(key=lambda r: r[3], reverse=True)
+            open_polls.sort(
+                key=lambda r: r[created_col] if (created_col is not None and created_col < len(r)) else "",
+                reverse=True,
+            )
             r = open_polls[0]
-            return _row_to_poll(r, self._get_entries_sync(int(r[0])))
+            return self._row_to_poll(r, self._get_entries_sync(int(r[id_col])))
 
         return await asyncio.to_thread(_do)
 
     async def close_poll(self, poll_id: int) -> Poll:
         def _do():
             ws = self._ws("polls")
-            row_idx = self._find_row_idx(ws, poll_id)
+            row_idx = self._find_row_idx(ws, poll_id, "polls")
             if row_idx is None:
                 raise ValueError(f"Poll id={poll_id} not found.")
-            now = _now_iso()
-            ws.update_cell(row_idx, _POLL_COL["status"] + 1, "closed")
-            ws.update_cell(row_idx, _POLL_COL["closed_at"] + 1, now)
+            status_col = self._col_idx("polls", "status")
+            closed_col = self._col_idx("polls", "closed_at")
+            if status_col:
+                ws.update_cell(row_idx, status_col, "closed")
+            if closed_col:
+                ws.update_cell(row_idx, closed_col, _now_iso())
             self._cache.drop("polls")
 
         await asyncio.to_thread(_do)
@@ -399,15 +544,22 @@ class GoogleSheetsStorageProvider(StorageProvider):
         def _do() -> int:
             ws = self._ws("schedule_entries")
             rows = ws.get_all_values()[1:]
-            for r in rows:
-                if r and r[1] == str(movie_id):
-                    raise ValueError(f"Movie id={movie_id} is already scheduled.")
-            new_id = _next_id(rows)
-            now = _now_iso()
-            ws.append_row(
-                [str(new_id), str(movie_id), _to_str(poll_id), scheduled_for.isoformat(), "", "", now],
-                value_input_option="RAW",
-            )
+            movie_col = self._cols["schedule_entries"].get("movie_id")
+            if movie_col is not None:
+                for r in rows:
+                    if r and movie_col < len(r) and r[movie_col] == str(movie_id):
+                        raise ValueError(f"Movie id={movie_id} is already scheduled.")
+            new_id = self._next_id("schedule_entries", rows)
+            values = {
+                "id": new_id,
+                "movie_id": movie_id,
+                "poll_id": poll_id,
+                "scheduled_for": scheduled_for,
+                "discord_event_id": "",
+                "posted_msg_id": "",
+                "created_at": _now_iso(),
+            }
+            ws.append_row(self._pack_row("schedule_entries", values), value_input_option="RAW")
             self._cache.drop("schedule_entries")
             return new_id
 
@@ -416,9 +568,10 @@ class GoogleSheetsStorageProvider(StorageProvider):
 
     async def get_schedule_entry(self, entry_id: int) -> Optional[ScheduleEntry]:
         def _do():
+            id_col = self._cols["schedule_entries"].get("id", 0)
             for r in self._rows("schedule_entries"):
-                if r and r[0] == str(entry_id):
-                    return _row_to_schedule_entry(r)
+                if r and id_col < len(r) and r[id_col] == str(entry_id):
+                    return self._row_to_schedule_entry(r)
             return None
 
         return await asyncio.to_thread(_do)
@@ -427,10 +580,11 @@ class GoogleSheetsStorageProvider(StorageProvider):
         self, upcoming_only: bool = True, limit: int = 10
     ) -> list[ScheduleEntry]:
         def _do():
+            id_col = self._cols["schedule_entries"].get("id", 0)
             entries = [
-                _row_to_schedule_entry(r)
+                self._row_to_schedule_entry(r)
                 for r in self._rows("schedule_entries")
-                if r and r[0]
+                if r and id_col < len(r) and r[id_col]
             ]
             now = datetime.now(timezone.utc)
             if upcoming_only:
@@ -453,12 +607,14 @@ class GoogleSheetsStorageProvider(StorageProvider):
 
         def _do():
             ws = self._ws("schedule_entries")
-            row_idx = self._find_row_idx(ws, entry_id)
+            row_idx = self._find_row_idx(ws, entry_id, "schedule_entries")
             if row_idx is None:
                 raise ValueError(f"Schedule entry id={entry_id} not found.")
             for field_name, value in update_fields.items():
-                col_idx = _SCHEDULE_COL[field_name] + 1
-                ws.update_cell(row_idx, col_idx, _to_str(value))
+                col = self._col_idx("schedule_entries", field_name)
+                if col is None:
+                    continue
+                ws.update_cell(row_idx, col, _to_str(value))
             self._cache.drop("schedule_entries")
 
         await asyncio.to_thread(_do)
@@ -467,7 +623,7 @@ class GoogleSheetsStorageProvider(StorageProvider):
     async def delete_schedule_entry(self, entry_id: int) -> None:
         def _do():
             ws = self._ws("schedule_entries")
-            row_idx = self._find_row_idx(ws, entry_id)
+            row_idx = self._find_row_idx(ws, entry_id, "schedule_entries")
             if row_idx is not None:
                 ws.delete_rows(row_idx)
                 self._cache.drop("schedule_entries")
@@ -476,26 +632,38 @@ class GoogleSheetsStorageProvider(StorageProvider):
 
     async def get_schedule_entry_for_movie(self, movie_id: int) -> Optional[ScheduleEntry]:
         def _do():
+            movie_col = self._cols["schedule_entries"].get("movie_id")
+            if movie_col is None:
+                return None
             for r in self._rows("schedule_entries"):
-                if r and r[1] == str(movie_id):
-                    return _row_to_schedule_entry(r)
+                if r and movie_col < len(r) and r[movie_col] == str(movie_id):
+                    return self._row_to_schedule_entry(r)
             return None
 
         return await asyncio.to_thread(_do)
 
     async def list_watched_history(self, limit: int = 50) -> list[tuple[Movie, Optional[datetime]]]:
         def _do():
-            sched_by_movie = {
-                r[1]: _parse_dt(r[3])
-                for r in self._rows("schedule_entries")
-                if r and r[1]
-            }
-            result = [
-                (_row_to_movie(r), sched_by_movie.get(r[0]))
-                for r in self._rows("movies")
-                if r and r[9] == MovieStatus.WATCHED
-            ]
-            result.sort(key=lambda t: t[1] or t[0].added_at, reverse=True)
+            sched_movie_col = self._cols["schedule_entries"].get("movie_id")
+            sched_when_col = self._cols["schedule_entries"].get("scheduled_for")
+            sched_by_movie: dict[str, Optional[datetime]] = {}
+            if sched_movie_col is not None and sched_when_col is not None:
+                for r in self._rows("schedule_entries"):
+                    if r and sched_movie_col < len(r) and r[sched_movie_col]:
+                        when = r[sched_when_col] if sched_when_col < len(r) else ""
+                        sched_by_movie[r[sched_movie_col]] = _parse_dt(when) if when else None
+
+            movie_id_col = self._cols["movies"].get("id", 0)
+            status_col = self._cols["movies"].get("status")
+            result = []
+            for r in self._rows("movies"):
+                if not r or movie_id_col >= len(r):
+                    continue
+                row_status = r[status_col] if (status_col is not None and status_col < len(r)) else ""
+                if row_status != MovieStatus.WATCHED:
+                    continue
+                result.append((self._row_to_movie(r), sched_by_movie.get(r[movie_id_col])))
+            result.sort(key=lambda t: t[1] or t[0].added_at or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
             return result[:limit]
 
         return await asyncio.to_thread(_do)
@@ -505,22 +673,29 @@ class GoogleSheetsStorageProvider(StorageProvider):
     async def set_user_timezone(self, user_id: str, tz_name: str) -> None:
         def _do():
             ws = self._ws("user_timezones")
+            user_col = self._cols["user_timezones"].get("user_id", 0)
+            tz_col = self._cols["user_timezones"].get("tz_name", 1)
             all_rows = ws.get_all_values()
             for i, r in enumerate(all_rows[1:], start=2):
-                if r and r[0] == user_id:
-                    ws.update_cell(i, 2, tz_name)
+                if r and user_col < len(r) and r[user_col] == user_id:
+                    ws.update_cell(i, tz_col + 1, tz_name)
                     self._cache.drop("user_timezones")
                     return
-            ws.append_row([user_id, tz_name], value_input_option="RAW")
+            ws.append_row(
+                self._pack_row("user_timezones", {"user_id": user_id, "tz_name": tz_name}),
+                value_input_option="RAW",
+            )
             self._cache.drop("user_timezones")
 
         await asyncio.to_thread(_do)
 
     async def get_user_timezone(self, user_id: str) -> Optional[str]:
         def _do():
+            user_col = self._cols["user_timezones"].get("user_id", 0)
+            tz_col = self._cols["user_timezones"].get("tz_name", 1)
             for r in self._rows("user_timezones"):
-                if r and r[0] == user_id:
-                    return r[1]
+                if r and user_col < len(r) and r[user_col] == user_id and tz_col < len(r):
+                    return r[tz_col]
             return None
 
         return await asyncio.to_thread(_do)

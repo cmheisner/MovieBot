@@ -11,42 +11,19 @@ from bot.constants import NUMBER_EMOJI, MAX_POLL_OPTIONS, TZ_EASTERN, MOVIE_NIGH
 from bot.models.movie import Movie, MovieStatus
 from bot.models.poll import Poll, PollEntry
 from bot.utils.embeds import poll_embed
-from bot.utils.time_utils import next_movie_night, format_dt_eastern
+from bot.utils.time_utils import format_dt_eastern
 from bot.cogs.seasons import SEASON_CHOICES
 
 log = logging.getLogger(__name__)
 
 
-def _resolve_winner(
-    entries: list[PollEntry],
-    vote_counts: dict[int, int],
-    movies_by_id: dict,
-) -> Optional[PollEntry]:
-    if not entries:
-        return None
-    max_votes = max(vote_counts.get(e.movie_id, 0) for e in entries)
-    tied = [e for e in entries if vote_counts.get(e.movie_id, 0) == max_votes]
-    if len(tied) == 1:
-        return tied[0]
-    return min(tied, key=lambda e: movies_by_id[e.movie_id].added_at)
-
-
-async def _stash_autocomplete(
-    interaction: discord.Interaction,
-    current: str,
-) -> list[app_commands.Choice[str]]:
-    """Return stash movies matching the current search string."""
-    try:
-        movies = await interaction.client.storage.list_movies(status=MovieStatus.STASH)
-    except Exception:
-        return []
-    current_lower = current.lower()
-    matches = [m for m in movies if current_lower in m.title.lower()]
-    matches = matches[:25]
-    return [
-        app_commands.Choice(name=f"{m.display_title}", value=str(m.id))
-        for m in matches
-    ]
+def _user_has_staff_role(user: discord.abc.User, staff_role_id: int) -> bool:
+    """Accept either the numeric role ID or a role literally named 'Staff' (fallback)."""
+    roles = getattr(user, "roles", []) or []
+    return any(
+        (staff_role_id and r.id == staff_role_id) or r.name.lower() == "staff"
+        for r in roles
+    )
 
 
 class PollCog(commands.Cog, name="Poll"):
@@ -72,39 +49,41 @@ class PollCog(commands.Cog, name="Poll"):
 
     poll = app_commands.Group(name="poll", description="Create and manage movie polls.")
 
-    # ── /poll create ──────────────────────────────────────────────────────
-
     _DATE_FORMATS = ["%Y-%m-%d", "%m/%d/%Y", "%m-%d-%Y", "%m/%d/%y", "%B %d %Y", "%b %d %Y"]
 
-    @poll.command(name="create", description="Create a voting poll from stash movies.")
+    # ── /poll create (Staff only) ─────────────────────────────────────────
+
+    @poll.command(
+        name="create",
+        description="[Staff] Create a poll from all stash movies tagged to a season.",
+    )
     @app_commands.describe(
+        season="Season whose stash movies will become poll options",
         date="Movie night date this poll is for (e.g. 2026-04-09 or 4/9/2026)",
-        season="Auto-fill poll with all stash movies tagged to this season",
-        movie_1="First movie (start typing to search the stash)",
-        movie_2="Second movie",
-        movie_3="Third movie",
-        movie_4="Fourth movie",
-        duration_hours="How many hours voting stays open (0 = manual close only, default 24)",
+        duration_hours="How many hours voting stays open (0 = manual close, default 24)",
     )
     @app_commands.choices(season=SEASON_CHOICES)
     async def poll_create(
         self,
         interaction: discord.Interaction,
+        season: str,
         date: str,
-        season: str | None = None,
-        movie_1: str | None = None,
-        movie_2: str | None = None,
-        movie_3: str | None = None,
-        movie_4: str | None = None,
         duration_hours: int = 24,
     ):
         await interaction.response.defer()
 
-        # Guard: block if a poll is already open
+        # Staff gate
+        if not _user_has_staff_role(interaction.user, self.bot.config.staff_role_id):
+            await interaction.followup.send(
+                "⛔ Only members with the **Staff** role can create polls.", ephemeral=True
+            )
+            return
+
+        # Block if a poll is already open
         existing_poll = await self.bot.storage.get_latest_open_poll()
         if existing_poll:
             await interaction.followup.send(
-                f"⚠️ Poll id={existing_poll.id} is already open. Use `/poll cancel` or `/poll close` first.",
+                f"⚠️ Poll id={existing_poll.id} is already open. Close it first with `/poll close`.",
                 ephemeral=True,
             )
             return
@@ -143,74 +122,23 @@ class PollCog(commands.Cog, name="Poll"):
             )
             return
 
-        # Build movie list — season tag auto-load + explicit picks
-        ids: list[int] = []
-
-        # Season: auto-load all stash movies tagged to this season
-        if season:
-            all_stash = await self.bot.storage.list_movies(status=MovieStatus.STASH)
-            season_movies = [m for m in all_stash if m.season == season]
-            if not season_movies:
-                await interaction.followup.send(
-                    f"⚠️ No stash movies found tagged as **{season}**.", ephemeral=True
-                )
-                return
-            ids.extend(m.id for m in season_movies)
-
-        # Explicit movie params
-        raw_ids = [v for v in [movie_1, movie_2, movie_3, movie_4] if v]
-        for raw in raw_ids:
-            if raw.isdigit():
-                ids.append(int(raw))
-            else:
-                matches = await self.bot.storage.get_movies_by_title(raw)
-                stash_matches = [m for m in matches if m.status == MovieStatus.STASH]
-                if not stash_matches:
-                    await interaction.followup.send(
-                        f"⚠️ **{raw}** not found in the stash.", ephemeral=True
-                    )
-                    return
-                ids.append(stash_matches[0].id)
-
-        # Must have at least one source
-        if not ids:
+        # Load stash movies for the chosen season
+        all_stash = await self.bot.storage.list_movies(status=MovieStatus.STASH)
+        season_movies = [m for m in all_stash if m.season == season]
+        if not season_movies:
             await interaction.followup.send(
-                "⚠️ Provide at least one movie or a season tag.", ephemeral=True
+                f"⚠️ No stash movies found tagged as **{season}**.", ephemeral=True
             )
             return
-
-        # Deduplicate while preserving order
-        seen: set[int] = set()
-        unique_ids: list[int] = []
-        for mid in ids:
-            if mid not in seen:
-                seen.add(mid)
-                unique_ids.append(mid)
-
-        if len(unique_ids) > MAX_POLL_OPTIONS:
+        if len(season_movies) > MAX_POLL_OPTIONS:
             await interaction.followup.send(
-                f"⚠️ Too many movies ({len(unique_ids)}). Maximum is {MAX_POLL_OPTIONS}. "
-                f"Remove some from the season stash or deselect some movies.",
+                f"⚠️ **{season}** has {len(season_movies)} stash movies — the max per poll is "
+                f"{MAX_POLL_OPTIONS}. Remove some from the stash and try again.",
                 ephemeral=True,
             )
             return
 
-        # Validate movies exist and are in stash
-        movies: list[Movie] = []
-        for mid in unique_ids:
-            m = await self.bot.storage.get_movie(mid)
-            if not m:
-                await interaction.followup.send(f"⚠️ Movie id={mid} not found.", ephemeral=True)
-                return
-            if m.status != MovieStatus.STASH:
-                await interaction.followup.send(
-                    f"⚠️ **{m.display_title}** has status '{m.status}' — only stash movies can be polled.",
-                    ephemeral=True,
-                )
-                return
-            movies.append(m)
-
-        emojis = NUMBER_EMOJI[: len(movies)]
+        emojis = NUMBER_EMOJI[: len(season_movies)]
         closes_at = (
             datetime.now(timezone.utc) + timedelta(hours=duration_hours)
             if duration_hours > 0
@@ -226,12 +154,16 @@ class PollCog(commands.Cog, name="Poll"):
         target_str = format_dt_eastern(target_date)
         temp_entries = [
             PollEntry(id=0, poll_id=0, movie_id=m.id, position=i + 1, emoji=emojis[i])
-            for i, m in enumerate(movies)
+            for i, m in enumerate(season_movies)
         ]
         plex_availability = {}
-        for m in movies:
+        for m in season_movies:
             plex_availability[m.id] = await self.bot.plex.check_movie(m.title)
-        embed = poll_embed(movies, temp_entries, closes_at_str=closes_str, target_date_str=target_str, plex_availability=plex_availability)
+        embed = poll_embed(
+            season_movies, temp_entries,
+            closes_at_str=closes_str, target_date_str=target_str,
+            plex_availability=plex_availability,
+        )
 
         msg = await general_ch.send(embed=embed)
         for emoji in emojis:
@@ -240,13 +172,13 @@ class PollCog(commands.Cog, name="Poll"):
         poll = await self.bot.storage.add_poll(
             discord_msg_id=str(msg.id),
             channel_id=str(general_ch.id),
-            movie_ids=[m.id for m in movies],
+            movie_ids=[m.id for m in season_movies],
             emojis=emojis,
             closes_at=closes_at,
             target_date=target_date,
         )
 
-        for m in movies:
+        for m in season_movies:
             await self.bot.storage.update_movie(m.id, status=MovieStatus.NOMINATED)
 
         maintenance = self.bot.get_cog("Maintenance")
@@ -258,80 +190,53 @@ class PollCog(commands.Cog, name="Poll"):
             reply += f"\nVoting closes {closes_str}."
         await interaction.followup.send(reply, ephemeral=True)
 
-    @poll_create.autocomplete("movie_1")
-    @poll_create.autocomplete("movie_2")
-    @poll_create.autocomplete("movie_3")
-    @poll_create.autocomplete("movie_4")
-    async def movie_autocomplete(
-        self, interaction: discord.Interaction, current: str
-    ) -> list[app_commands.Choice[str]]:
-        return await _stash_autocomplete(interaction, current)
+    # ── /poll list ────────────────────────────────────────────────────────
 
-    # ── /poll status ──────────────────────────────────────────────────────
-
-    @poll.command(name="status", description="Show current vote tallies.")
-    @app_commands.describe(poll_id="Poll ID (omit for latest open poll)")
-    async def poll_status(
-        self,
-        interaction: discord.Interaction,
-        poll_id: int | None = None,
-    ):
-        await interaction.response.defer(ephemeral=True)
-        poll = await self._resolve_poll(poll_id)
+    @poll.command(name="list", description="Show current vote tallies for the open poll.")
+    async def poll_list(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+        poll = await self.bot.storage.get_latest_open_poll()
         if not poll:
             await interaction.followup.send("⚠️ No open poll found.", ephemeral=True)
             return
 
         vote_counts, movies_by_id = await self._fetch_votes(poll)
+        ranked = sorted(
+            ((entry, vote_counts.get(entry.movie_id, 0)) for entry in poll.entries),
+            key=lambda t: t[1],
+            reverse=True,
+        )
         lines = []
-        for entry in poll.entries:
+        for entry, votes in ranked:
+            if votes <= 0:
+                continue
             movie = movies_by_id.get(entry.movie_id)
-            if movie:
-                votes = vote_counts.get(entry.movie_id, 0)
-                plex_tag = " 📀" if await self.bot.plex.check_movie(movie.title) else ""
-                lines.append(f"{entry.emoji} **{movie.display_title}**{plex_tag} — {votes} vote(s)")
-        embed = discord.Embed(title="🗳️ Current Vote Tally", description="\n".join(lines), color=discord.Color.gold())
-        await interaction.followup.send(embed=embed, ephemeral=True)
+            if not movie:
+                continue
+            lines.append(f"{entry.emoji} **{movie.display_title}** — {votes} vote(s)")
 
-    # ── /poll cancel ──────────────────────────────────────────────────────
-
-    @poll.command(name="cancel", description="Cancel the poll with no winner — all movies return to stash.")
-    @app_commands.describe(poll_id="Poll ID (omit for latest open poll)")
-    async def poll_cancel(
-        self,
-        interaction: discord.Interaction,
-        poll_id: int | None = None,
-    ):
-        await interaction.response.defer()
-        poll = await self._resolve_poll(poll_id, allow_closed=True)
-        if not poll:
-            await interaction.followup.send("⚠️ No poll found.", ephemeral=True)
-            return
-        if poll.status == "closed":
-            await interaction.followup.send(f"ℹ️ Poll id={poll.id} is already closed.", ephemeral=True)
-            return
-
-        for entry in poll.entries:
-            movie = await self.bot.storage.get_movie(entry.movie_id)
-            if movie and movie.status == MovieStatus.NOMINATED:
-                await self.bot.storage.update_movie(entry.movie_id, status=MovieStatus.STASH)
-
-        await self.bot.storage.close_poll(poll.id)
-        await interaction.followup.send(f"🚫 Poll cancelled — all nominated movies returned to stash.")
+        if not lines:
+            description = "_No votes yet._"
+        else:
+            description = "\n".join(lines)
+        embed = discord.Embed(
+            title="🗳️ Current Vote Tally",
+            description=description,
+            color=discord.Color.gold(),
+        )
+        await interaction.followup.send(embed=embed)
 
     # ── /poll close ───────────────────────────────────────────────────────
 
-    @poll.command(name="close", description="Close voting and schedule the winner.")
-    @app_commands.describe(poll_id="Poll ID (omit for latest open poll)")
-    async def poll_close(
-        self,
-        interaction: discord.Interaction,
-        poll_id: int | None = None,
-    ):
+    @poll.command(
+        name="close",
+        description="Close the open poll and post a ranked list of results (for copy-paste into /schedule add).",
+    )
+    async def poll_close(self, interaction: discord.Interaction):
         await interaction.response.defer()
-        poll = await self._resolve_poll(poll_id, allow_closed=True)
+        poll = await self.bot.storage.get_latest_open_poll()
         if not poll:
-            await interaction.followup.send("⚠️ No poll found.", ephemeral=True)
+            await interaction.followup.send("⚠️ No open poll found.", ephemeral=True)
             return
 
         general_ch = self.bot.get_channel(int(poll.channel_id))
@@ -339,14 +244,6 @@ class PollCog(commands.Cog, name="Poll"):
         await interaction.followup.send(result)
 
     # ── helpers ───────────────────────────────────────────────────────────
-
-    async def _resolve_poll(self, poll_id: Optional[int], allow_closed: bool = False) -> Optional[Poll]:
-        if poll_id:
-            return await self.bot.storage.get_poll(poll_id)
-        poll = await self.bot.storage.get_latest_open_poll()
-        if not poll and allow_closed:
-            pass
-        return poll
 
     async def _fetch_votes(self, poll: Poll) -> tuple[dict[int, int], dict]:
         vote_counts: dict[int, int] = {}
@@ -374,49 +271,39 @@ class PollCog(commands.Cog, name="Poll"):
         return vote_counts, movies_by_id
 
     async def _do_close_poll(self, poll: Poll, channel: Optional[discord.TextChannel]) -> str:
+        """Close a poll, return ranked movies (descending) for copy-paste into /schedule add."""
         if poll.status == "closed":
             return f"ℹ️ Poll id={poll.id} was already closed."
 
         vote_counts, movies_by_id = await self._fetch_votes(poll)
-        winner_entry = _resolve_winner(poll.entries, vote_counts, movies_by_id)
-        if not winner_entry:
-            await self.bot.storage.close_poll(poll.id)
-            return "⚠️ Poll closed with no entries."
 
-        winner_movie = movies_by_id[winner_entry.movie_id]
+        # Rank movies by votes descending; tie-break by earliest added.
+        ranked: list[tuple[PollEntry, int]] = sorted(
+            ((entry, vote_counts.get(entry.movie_id, 0)) for entry in poll.entries),
+            key=lambda t: (-t[1], movies_by_id[t[0].movie_id].added_at if movies_by_id.get(t[0].movie_id) else datetime.max.replace(tzinfo=timezone.utc)),
+        )
 
-        slot = poll.target_date or next_movie_night()
-        try:
-            await self.bot.storage.add_schedule_entry(
-                movie_id=winner_movie.id,
-                scheduled_for=slot,
-                poll_id=poll.id,
-            )
-        except ValueError:
-            pass
-
+        # Return every nominated movie to stash; the Staff will use /schedule add manually.
         for entry in poll.entries:
-            if entry.movie_id == winner_entry.movie_id:
-                await self.bot.storage.update_movie(entry.movie_id, status=MovieStatus.SCHEDULED)
-            else:
-                movie = movies_by_id.get(entry.movie_id)
-                if movie and movie.status == MovieStatus.NOMINATED:
-                    await self.bot.storage.update_movie(entry.movie_id, status=MovieStatus.STASH)
+            movie = movies_by_id.get(entry.movie_id)
+            if movie and movie.status == MovieStatus.NOMINATED:
+                await self.bot.storage.update_movie(entry.movie_id, status=MovieStatus.STASH)
 
         await self.bot.storage.close_poll(poll.id)
 
-        maintenance = self.bot.get_cog("Maintenance")
-        if maintenance:
-            await maintenance.post_schedule_announcement(winner_movie, slot)
+        lines = [f"🗳️ **Poll closed (id={poll.id}).** Results ranked by votes:"]
+        for idx, (entry, votes) in enumerate(ranked, start=1):
+            movie = movies_by_id.get(entry.movie_id)
+            title = movie.display_title if movie else f"Movie #{entry.movie_id}"
+            lines.append(f"{idx}. **{title}** — {votes} vote(s)")
+        lines.append("\n-# Copy a title into `/schedule add movie:` to schedule it.")
+        result_msg = "\n".join(lines)
 
-        winner_votes = vote_counts.get(winner_entry.movie_id, 0)
-        result_msg = (
-            f"🎉 Voting closed! The winner is **{winner_movie.display_title}** "
-            f"with **{winner_votes}** vote(s)!\n"
-            f"Scheduled for: {format_dt_eastern(slot)}"
-        )
         if channel:
-            await channel.send(result_msg)
+            try:
+                await channel.send(result_msg)
+            except Exception as exc:
+                log.warning("Poll close: could not post results to channel: %s", exc)
         return result_msg
 
 

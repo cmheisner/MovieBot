@@ -129,7 +129,7 @@ def stash_list_embed(
             for m in movies
         )
 
-    embed.set_footer(text=f"{len(movies)} movie(s) · Use /stash-info <title> <year> for details")
+    embed.set_footer(text=f"{len(movies)} movie(s)")
     return embed
 
 

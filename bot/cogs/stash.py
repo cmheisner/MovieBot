@@ -1,6 +1,5 @@
 from __future__ import annotations
 import logging
-from datetime import datetime
 from typing import Optional
 
 import discord
@@ -9,43 +8,30 @@ from discord.ext import commands
 
 from bot.models.movie import MovieStatus
 from bot.utils.embeds import movie_card, stash_list_embed
-from bot.utils.movie_lookup import resolve_movie
-from bot.utils.time_utils import format_dt_eastern
+from bot.utils.movie_lookup import autocomplete_movies, resolve_movie_by_id
+from bot.utils.tags import tags_from_omdb
 from bot.cogs.seasons import SEASON_CHOICES
 
 log = logging.getLogger(__name__)
-
-STATUS_CHOICES = [
-    app_commands.Choice(name="Stash (candidates)", value="stash"),
-    app_commands.Choice(name="Nominated (in a poll)", value="nominated"),
-    app_commands.Choice(name="Scheduled", value="scheduled"),
-    app_commands.Choice(name="Watched", value="watched"),
-    app_commands.Choice(name="All", value="all"),
-]
-
-ADD_STATUS_CHOICES = [
-    app_commands.Choice(name="Watched", value="watched"),
-    app_commands.Choice(name="Scheduled", value="scheduled"),
-]
-
-EDIT_STATUS_CHOICES = [
-    app_commands.Choice(name="Stash", value="stash"),
-    app_commands.Choice(name="Watched", value="watched"),
-    app_commands.Choice(name="Scheduled", value="scheduled"),
-]
 
 
 class MovieSelectView(discord.ui.View):
     """Shown when OMDB returns multiple search results and the user must pick one."""
 
-    def __init__(self, results: list[dict], *, bot, interaction: discord.Interaction,
-                 notes: Optional[str], season: Optional[str] = None, status: Optional[str] = None):
+    def __init__(
+        self,
+        results: list[dict],
+        *,
+        bot,
+        interaction: discord.Interaction,
+        notes: Optional[str],
+        season: str,
+    ):
         super().__init__(timeout=60)
         self.bot = bot
         self.original_interaction = interaction
         self.notes = notes
         self.season = season
-        self.status = status
 
         seen_values: set[str] = set()
         deduped = []
@@ -77,6 +63,7 @@ class MovieSelectView(discord.ui.View):
             return
 
         omdb_data = await self.bot.media.fetch_metadata(raw_title, year)
+        tags = tags_from_omdb(omdb_data)
 
         try:
             movie = await self.bot.storage.add_movie(
@@ -87,7 +74,8 @@ class MovieSelectView(discord.ui.View):
                 notes=self.notes,
                 omdb_data=omdb_data,
                 season=self.season,
-                status=self.status or MovieStatus.STASH,
+                status=MovieStatus.STASH,
+                tags=tags,
             )
         except ValueError as e:
             await interaction.followup.send(f"⚠️ {e}", ephemeral=True)
@@ -119,21 +107,18 @@ class StashCog(commands.Cog, name="Stash"):
     @stash.command(name="add", description="Add a movie to the stash.")
     @app_commands.describe(
         title="Movie title",
+        season="Seasonal collection to tag this movie under (required)",
         year="Release year (auto-detected from OMDB if omitted)",
         notes="Optional notes or comments",
-        season="Seasonal collection to tag this movie under",
-        status="Override status (default: Stash)",
     )
     @app_commands.choices(season=SEASON_CHOICES)
-    @app_commands.choices(status=ADD_STATUS_CHOICES)
     async def stash_add(
         self,
         interaction: discord.Interaction,
         title: str,
+        season: str,
         year: int | None = None,
         notes: str | None = None,
-        season: str | None = None,
-        status: str | None = None,
     ):
         await interaction.response.defer(ephemeral=True)
 
@@ -143,7 +128,7 @@ class StashCog(commands.Cog, name="Stash"):
             if not results:
                 await interaction.followup.send(
                     f"⚠️ Could not find **{title}** on OMDB. "
-                    f"Please provide the year manually: `/stash add title:{title} year:YYYY`",
+                    f"Please provide the year manually: `/stash add title:{title} season:{season} year:YYYY`",
                     ephemeral=True,
                 )
                 return
@@ -151,10 +136,7 @@ class StashCog(commands.Cog, name="Stash"):
                 year = int(results[0]["Year"][:4])
                 omdb_data = await self.bot.media.fetch_metadata(title, year)
             else:
-                view = MovieSelectView(
-                    results, bot=self.bot, interaction=interaction,
-                    notes=notes, season=season, status=status,
-                )
+                view = MovieSelectView(results, bot=self.bot, interaction=interaction, notes=notes, season=season)
                 await interaction.followup.send(
                     f"Found **{len(results)}** results for **{title}** — which one?",
                     view=view,
@@ -163,6 +145,8 @@ class StashCog(commands.Cog, name="Stash"):
                 return
         else:
             omdb_data = await self.bot.media.fetch_metadata(title, year)
+
+        tags = tags_from_omdb(omdb_data)
 
         try:
             movie = await self.bot.storage.add_movie(
@@ -173,7 +157,8 @@ class StashCog(commands.Cog, name="Stash"):
                 notes=notes,
                 omdb_data=omdb_data,
                 season=season,
-                status=status or MovieStatus.STASH,
+                status=MovieStatus.STASH,
+                tags=tags,
             )
         except ValueError as e:
             await interaction.followup.send(f"⚠️ {e}", ephemeral=True)
@@ -187,186 +172,47 @@ class StashCog(commands.Cog, name="Stash"):
 
     # ── /stash list ───────────────────────────────────────────────────────
 
-    @stash.command(name="list", description="List movies in the stash.")
-    @app_commands.describe(
-        status="Filter by status (default: stash)",
-        season="Filter by seasonal collection",
-    )
-    @app_commands.choices(status=STATUS_CHOICES)
-    @app_commands.choices(season=SEASON_CHOICES)
-    async def stash_list(
-        self,
-        interaction: discord.Interaction,
-        status: str = "stash",
-        season: str | None = None,
-    ):
+    @stash.command(name="list", description="List movies currently in the stash.")
+    async def stash_list(self, interaction: discord.Interaction):
         await interaction.response.defer()
-        watch_dates: dict[int, datetime] = {}
-        if status == "watched":
-            history = await self.bot.storage.list_watched_history(limit=200)
-            movies = [m for m, _ in history]
-            watch_dates = {m.id: d for m, d in history if d}
-        else:
-            movies = await self.bot.storage.list_movies(status=status)
-        if season is not None:
-            movies = [m for m in movies if m.season == season]
+        movies = await self.bot.storage.list_movies(status=MovieStatus.STASH)
         plex_availability = {}
         for m in movies:
             plex_availability[m.id] = await self.bot.plex.check_movie(m.title)
-        embed = stash_list_embed(movies, status_label=status, plex_availability=plex_availability, watch_dates=watch_dates)
+        embed = stash_list_embed(movies, status_label="Stash", plex_availability=plex_availability)
         await interaction.followup.send(embed=embed)
-
-    # ── /stash info ───────────────────────────────────────────────────────
-
-    @stash.command(name="info", description="Show details for a movie in the stash.")
-    @app_commands.describe(title="Movie title", year="Release year (optional)")
-    async def stash_info(
-        self,
-        interaction: discord.Interaction,
-        title: str,
-        year: int | None = None,
-    ):
-        await interaction.response.defer()
-        movie = await resolve_movie(self.bot.storage, interaction, title, year)
-        if not movie:
-            return
-        on_plex = await self.bot.plex.check_movie(movie.title)
-        await interaction.followup.send(embed=movie_card(movie, on_plex=on_plex))
-
-    # ── /stash edit ───────────────────────────────────────────────────────
-
-    @stash.command(name="edit", description="Edit a movie's notes, seasonal group, or status.")
-    @app_commands.describe(
-        title="Movie title",
-        year="Release year (optional)",
-        notes="New notes",
-        season="New seasonal collection",
-        status="New status",
-    )
-    @app_commands.choices(season=SEASON_CHOICES)
-    @app_commands.choices(status=EDIT_STATUS_CHOICES)
-    async def stash_edit(
-        self,
-        interaction: discord.Interaction,
-        title: str,
-        year: int | None = None,
-        notes: str | None = None,
-        season: str | None = None,
-        status: str | None = None,
-    ):
-        await interaction.response.defer(ephemeral=True)
-        movie = await resolve_movie(self.bot.storage, interaction, title, year)
-        if not movie:
-            return
-
-        is_owner = str(interaction.user.id) == movie.added_by_id
-        is_admin = interaction.user.guild_permissions.manage_guild
-        if not (is_owner or is_admin):
-            await interaction.followup.send("⛔ Only the person who added this movie (or an admin) can edit it.", ephemeral=True)
-            return
-
-        updates = {}
-        if notes is not None:
-            updates["notes"] = notes
-        if season is not None:
-            updates["season"] = season
-        if status is not None:
-            updates["status"] = status
-
-        if not updates:
-            await interaction.followup.send("Nothing to update.", ephemeral=True)
-            return
-
-        movie = await self.bot.storage.update_movie(movie.id, **updates)
-        await interaction.followup.send(embed=movie_card(movie, title_prefix="✏️ Updated: "), ephemeral=True)
 
     # ── /stash remove ─────────────────────────────────────────────────────
 
     @stash.command(name="remove", description="Remove a movie from the stash.")
-    @app_commands.describe(title="Movie title", year="Release year (optional)")
-    async def stash_remove(
-        self,
-        interaction: discord.Interaction,
-        title: str,
-        year: int | None = None,
-    ):
+    @app_commands.describe(movie="Movie to remove (start typing to search the stash)")
+    async def stash_remove(self, interaction: discord.Interaction, movie: str):
         await interaction.response.defer(ephemeral=True)
-        movie = await resolve_movie(self.bot.storage, interaction, title, year)
-        if not movie:
+        m = await resolve_movie_by_id(self.bot.storage, interaction, movie)
+        if not m:
+            return
+        if m.status != MovieStatus.STASH:
+            await interaction.followup.send(
+                f"⚠️ **{m.display_title}** is not in the stash (status: `{m.status}`).", ephemeral=True
+            )
             return
 
-        is_owner = str(interaction.user.id) == movie.added_by_id
+        is_owner = str(interaction.user.id) == m.added_by_id
         is_admin = interaction.user.guild_permissions.manage_guild
         if not (is_owner or is_admin):
-            await interaction.followup.send("⛔ Only the person who added this movie (or an admin) can remove it.", ephemeral=True)
+            await interaction.followup.send(
+                "⛔ Only the person who added this movie (or an admin) can remove it.", ephemeral=True
+            )
             return
 
-        await self.bot.storage.update_movie(movie.id, status=MovieStatus.SKIPPED)
-        await interaction.followup.send(f"🗑️ **{movie.display_title}** removed from the stash.", ephemeral=True)
+        await self.bot.storage.update_movie(m.id, status=MovieStatus.SKIPPED)
+        await interaction.followup.send(f"🗑️ **{m.display_title}** removed from the stash.", ephemeral=True)
 
-    async def _mark_watched(self, interaction, movie):
-        """Shared logic for marking a movie watched and cleaning up its Discord event."""
-        await self.bot.storage.update_movie(movie.id, status=MovieStatus.WATCHED)
-
-        # Clean up Discord event if one exists
-        entry = await self.bot.storage.get_schedule_entry_for_movie(movie.id)
-        if entry and entry.discord_event_id and interaction.guild:
-            try:
-                event = await interaction.guild.fetch_scheduled_event(int(entry.discord_event_id))
-                await event.delete()
-                await self.bot.storage.update_schedule_entry(entry.id, discord_event_id=None)
-            except Exception:
-                pass
-
-        await interaction.followup.send(f"✅ **{movie.display_title}** marked as watched!")
-
-    # ── /stash archive ────────────────────────────────────────────────────
-
-    @stash.command(name="archive", description="Browse every movie we've ever watched.")
-    @app_commands.describe(limit="How many entries to show (default 20, max 50)")
-    async def stash_archive(self, interaction: discord.Interaction, limit: int = 20):
-        await interaction.response.defer()
-        limit = max(1, min(limit, 50))
-        history = await self.bot.storage.list_watched_history(limit=limit)
-
-        embed = discord.Embed(title="📚 Watched History", color=discord.Color.dark_gray())
-        if not history:
-            embed.description = "_No movies have been marked as watched yet._"
-            await interaction.followup.send(embed=embed)
-            return
-
-        lines = []
-        for movie, scheduled_for in history:
-            rating = ""
-            if movie.omdb_data:
-                r = movie.omdb_data.get("imdbRating", "")
-                if r and r != "N/A":
-                    rating = f" ⭐{r}"
-            plex_str = " 📀" if await self.bot.plex.check_movie(movie.title) else ""
-            date_str = f" — {format_dt_eastern(scheduled_for)}" if scheduled_for else ""
-            group_str = f" `{movie.season}`" if movie.season else ""
-            lines.append(f"**{movie.display_title}**{rating}{plex_str}{date_str}{group_str}")
-
-        embed.description = "\n".join(lines)
-        embed.set_footer(text=f"{len(history)} movie(s) watched")
-        await interaction.followup.send(embed=embed)
-
-
-    # ── /watched (shortcut) ───────────────────────────────────────────────
-
-    @app_commands.command(name="watched", description="Mark a movie as watched.")
-    @app_commands.describe(title="Movie title", year="Release year (optional)")
-    async def watched_shortcut(
-        self,
-        interaction: discord.Interaction,
-        title: str,
-        year: int | None = None,
-    ):
-        await interaction.response.defer()
-        movie = await resolve_movie(self.bot.storage, interaction, title, year)
-        if not movie:
-            return
-        await self._mark_watched(interaction, movie)
+    @stash_remove.autocomplete("movie")
+    async def _stash_remove_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> list[app_commands.Choice[str]]:
+        return await autocomplete_movies(interaction, current, [MovieStatus.STASH])
 
 
 async def setup(bot):

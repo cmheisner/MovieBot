@@ -12,6 +12,14 @@ class MovieStatus:
     SKIPPED = "skipped"
 
 
+# Genre tag columns on the sheet (K-R). Order matches the sheet.
+TAG_NAMES = ("drama", "comedy", "action", "horror", "thriller", "scifi", "romance", "family")
+
+
+def empty_tags() -> dict[str, bool]:
+    return {name: False for name in TAG_NAMES}
+
+
 @dataclass
 class Movie:
     id: int
@@ -26,6 +34,7 @@ class Movie:
     image_url: Optional[str] = None
     omdb_data: Optional[dict] = None
     season: Optional[str] = None
+    tags: dict[str, bool] = field(default_factory=empty_tags)
 
     @property
     def display_title(self) -> str:
@@ -40,3 +49,7 @@ class Movie:
             if poster and poster != "N/A":
                 return poster
         return None
+
+    @property
+    def active_tags(self) -> list[str]:
+        return [name for name in TAG_NAMES if self.tags.get(name)]

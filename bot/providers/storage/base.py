@@ -29,6 +29,7 @@ class StorageProvider(ABC):
         omdb_data: Optional[dict] = None,
         season: Optional[str] = None,
         status: Optional[str] = None,
+        tags: Optional[dict[str, bool]] = None,
     ) -> Movie:
         """Insert a new movie; raises ValueError on duplicate (title, year)."""
 

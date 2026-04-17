@@ -178,6 +178,7 @@ class SQLiteStorageProvider(StorageProvider):
         omdb_data=None,
         season=None,
         status=None,
+        tags: Optional[dict[str, bool]] = None,
     ) -> Movie:
         existing = await self.get_movie_by_title_year(title, year)
         if existing:
@@ -233,6 +234,8 @@ class SQLiteStorageProvider(StorageProvider):
 
     async def update_movie(self, movie_id: int, **fields) -> Movie:
         allowed = {"title", "year", "notes", "apple_tv_url", "image_url", "status", "omdb_data", "season"}
+        # tags are ignored in sqlite (dev-only fallback; prod uses Sheets).
+        fields.pop("tags", None)
         update_fields = {k: v for k, v in fields.items() if k in allowed}
         if "omdb_data" in update_fields and isinstance(update_fields["omdb_data"], dict):
             update_fields["omdb_data"] = json.dumps(update_fields["omdb_data"])

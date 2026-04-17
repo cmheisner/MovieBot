@@ -22,24 +22,16 @@ class HelpCog(commands.Cog, name="Help"):
         embed.add_field(
             name="🎬 Stash",
             value=(
-                "`/stash add` — Add a movie\n"
-                "`/stash list` — List movies (filter by status or season)\n"
-                "`/stash info` — Show details for a movie\n"
-                "`/stash edit` — Edit notes or season tag\n"
-                "`/stash remove` — Remove a movie\n"
-                "`/stash watched` — Mark a movie as watched\n"
-                "`/stash archive` — Browse everything we've watched"
+                "`/stash add` — Add a movie (season required; genres auto-tagged from OMDB)\n"
+                "`/stash list` — List movies currently in the stash\n"
+                "`/stash remove` — Remove a movie from the stash"
             ),
             inline=False,
         )
 
         embed.add_field(
             name="🗓️ Season",
-            value=(
-                "`/season list` — List movies in a seasonal collection\n"
-                "`/season tag` — Tag a movie to a season\n"
-                "`/season overview` — Summary of all seasonal collections"
-            ),
+            value="`/season tag` — Tag a movie to a seasonal collection",
             inline=False,
         )
 
@@ -47,11 +39,11 @@ class HelpCog(commands.Cog, name="Help"):
             name="📅 Schedule",
             value=(
                 "`/schedule list` — Show upcoming movies\n"
-                "`/schedule add` — Manually schedule a movie\n"
+                "`/schedule add` — Schedule a stash or skipped movie\n"
                 "`/schedule remove` — Remove a scheduled movie (returns to stash)\n"
-                "`/schedule reschedule` — Move a movie to a new date\n"
-                "`/schedule refresh` — Re-post the schedule in #schedule\n"
-                "`/schedule calendar` — Show the monthly calendar"
+                "`/schedule reschedule` — Move a scheduled movie to a new date\n"
+                "`/schedule fix` — Detect gap weeks and cascade future entries back\n"
+                "`/schedule calendar` — Show the calendar for a given month/year"
             ),
             inline=False,
         )
@@ -59,17 +51,28 @@ class HelpCog(commands.Cog, name="Help"):
         embed.add_field(
             name="🗳️ Poll",
             value=(
-                "`/poll create` — Create a vote from stash movies or a season tag\n"
-                "`/poll status` — See current vote tallies\n"
-                "`/poll close` — Close voting and schedule the winner\n"
-                "`/poll cancel` — Cancel the poll, return all movies to stash"
+                "`/poll create` — [Staff] Create a poll from a season's stash movies\n"
+                "`/poll list` — Show current vote tallies\n"
+                "`/poll close` — Close voting and post a ranked list"
             ),
             inline=False,
         )
 
         embed.add_field(
-            name="💩 Reviews",
-            value="`/reviews` — Post the worst audience reviews for a movie",
+            name="✅ Watched / 🗑️ Skipped",
+            value=(
+                "`/watched list` — Browse movies that have been watched\n"
+                "`/skipped list` — Browse movies that were skipped"
+            ),
+            inline=False,
+        )
+
+        embed.add_field(
+            name="💬 Reviews",
+            value=(
+                "`/reviews best` — Post the best audience reviews for a movie\n"
+                "`/reviews worst` — Post the worst audience reviews for a movie"
+            ),
             inline=False,
         )
 
@@ -81,12 +84,6 @@ class HelpCog(commands.Cog, name="Help"):
                 "`/profile upload` — Override avatar with a custom image (resets after next event)\n"
                 "`/profile reset` — Clear override and return to real/toon base"
             ),
-            inline=False,
-        )
-
-        embed.add_field(
-            name="✅ Quick Actions",
-            value="`/watched` — Mark a movie as watched",
             inline=False,
         )
 
