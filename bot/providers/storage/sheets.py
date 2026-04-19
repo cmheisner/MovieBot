@@ -235,6 +235,16 @@ class GoogleSheetsStorageProvider(StorageProvider):
             tags=tags,
         )
 
+    def _safe_row_to_movie(self, r: list[str]) -> Optional[Movie]:
+        """Parse a movie row, logging and skipping rows with corrupted values."""
+        try:
+            return self._row_to_movie(r)
+        except (ValueError, TypeError) as exc:
+            id_col = self._cols.get("movies", {}).get("id", 0)
+            row_id = r[id_col] if id_col < len(r) else "?"
+            log.warning("Skipping corrupted movie row id=%s: %s", row_id, exc)
+            return None
+
     def _row_to_poll(self, r: list[str], entries: list[PollEntry]) -> Poll:
         return Poll(
             id=int(self._get(r, "polls", "id") or 0),
@@ -333,7 +343,7 @@ class GoogleSheetsStorageProvider(StorageProvider):
             id_col = self._cols["movies"].get("id", 0)
             for r in self._rows("movies"):
                 if r and id_col < len(r) and r[id_col] == str(movie_id):
-                    return self._row_to_movie(r)
+                    return self._safe_row_to_movie(r)
             return None
 
         return await asyncio.to_thread(_do)
@@ -351,7 +361,7 @@ class GoogleSheetsStorageProvider(StorageProvider):
                     and r[title_col].lower() == title.lower()
                     and r[year_col] == str(year)
                 ):
-                    return self._row_to_movie(r)
+                    return self._safe_row_to_movie(r)
             return None
 
         return await asyncio.to_thread(_do)
@@ -370,7 +380,9 @@ class GoogleSheetsStorageProvider(StorageProvider):
                     continue
                 if status_col is not None and status_col < len(r) and r[status_col] == MovieStatus.SKIPPED:
                     continue
-                result.append(self._row_to_movie(r))
+                movie = self._safe_row_to_movie(r)
+                if movie is not None:
+                    result.append(movie)
             result.sort(key=lambda m: m.year, reverse=True)
             return result
 
@@ -386,11 +398,14 @@ class GoogleSheetsStorageProvider(StorageProvider):
                     continue
                 row_status = r[status_col] if (status_col is not None and status_col < len(r)) else ""
                 if status and status != "all":
-                    if row_status == status:
-                        result.append(self._row_to_movie(r))
+                    if row_status != status:
+                        continue
                 else:
-                    if row_status != MovieStatus.SKIPPED:
-                        result.append(self._row_to_movie(r))
+                    if row_status == MovieStatus.SKIPPED:
+                        continue
+                movie = self._safe_row_to_movie(r)
+                if movie is not None:
+                    result.append(movie)
             result.sort(key=lambda m: m.added_at or datetime.min.replace(tzinfo=timezone.utc))
             return result
 
@@ -662,7 +677,10 @@ class GoogleSheetsStorageProvider(StorageProvider):
                 row_status = r[status_col] if (status_col is not None and status_col < len(r)) else ""
                 if row_status != MovieStatus.WATCHED:
                     continue
-                result.append((self._row_to_movie(r), sched_by_movie.get(r[movie_id_col])))
+                movie = self._safe_row_to_movie(r)
+                if movie is None:
+                    continue
+                result.append((movie, sched_by_movie.get(r[movie_id_col])))
             result.sort(key=lambda t: t[1] or t[0].added_at or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
             return result[:limit]
 
