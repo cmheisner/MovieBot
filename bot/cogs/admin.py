@@ -15,11 +15,11 @@ class AdminCog(commands.Cog, name="Admin"):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
 
-    bot_cmd = app_commands.Group(name="bot", description="Bot administration commands.")
+    bot_group = app_commands.Group(name="bot", description="Bot administration commands.")
 
     # ── /bot restart ──────────────────────────────────────────────────────
 
-    @bot_cmd.command(name="restart", description="[Admin] Gracefully restart the bot.")
+    @bot_group.command(name="restart", description="[Admin] Gracefully restart the bot.")
     @app_commands.checks.has_permissions(manage_guild=True)
     async def restart(self, interaction: discord.Interaction) -> None:
         log.info("Restart requested by %s (id=%d).", interaction.user, interaction.user.id)
@@ -32,7 +32,7 @@ class AdminCog(commands.Cog, name="Admin"):
 
     # ── /bot update ───────────────────────────────────────────────────────
 
-    @bot_cmd.command(name="update", description="[Admin] Pull latest code from git then restart.")
+    @bot_group.command(name="update", description="[Admin] Pull latest code from git then restart.")
     @app_commands.checks.has_permissions(manage_guild=True)
     async def update(self, interaction: discord.Interaction) -> None:
         log.info("Update requested by %s (id=%d).", interaction.user, interaction.user.id)
