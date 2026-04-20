@@ -11,7 +11,7 @@ from bot.constants import TZ_EASTERN, MOVIE_NIGHT_HOUR, MOVIE_NIGHT_MINUTE
 from bot.models.movie import MovieStatus
 from bot.utils.embeds import schedule_embed, build_calendar_embed
 from bot.utils.movie_lookup import autocomplete_movies, resolve_movie_by_id
-from bot.utils.time_utils import next_movie_night, format_dt_eastern
+from bot.utils.time_utils import next_movie_night, next_movie_night_after, format_dt_eastern
 
 log = logging.getLogger(__name__)
 
@@ -64,10 +64,9 @@ class ScheduleCog(commands.Cog, name="Schedule"):
     # ── /schedule list ────────────────────────────────────────────────────
 
     @schedule.command(name="list", description="Show upcoming scheduled movies.")
-    @app_commands.describe(limit="How many entries to show (default 5)")
-    async def schedule_list(self, interaction: discord.Interaction, limit: int = 5):
+    async def schedule_list(self, interaction: discord.Interaction):
         await interaction.response.defer()
-        entries = await self.bot.storage.list_schedule_entries(upcoming_only=True, limit=limit)
+        entries = await self.bot.storage.list_schedule_entries(upcoming_only=True, limit=500)
         movies_by_id = {}
         for e in entries:
             m = await self.bot.storage.get_movie(e.movie_id)
@@ -131,6 +130,12 @@ class ScheduleCog(commands.Cog, name="Schedule"):
         self, interaction: discord.Interaction, current: str
     ) -> list[app_commands.Choice[str]]:
         return await autocomplete_movies(interaction, current, [MovieStatus.STASH, MovieStatus.SKIPPED])
+
+    @schedule_add.autocomplete("date")
+    async def _schedule_add_date_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> list[app_commands.Choice[str]]:
+        return await self._open_date_choices(current)
 
     # ── /schedule remove ──────────────────────────────────────────────────
 
@@ -257,6 +262,12 @@ class ScheduleCog(commands.Cog, name="Schedule"):
     ) -> list[app_commands.Choice[str]]:
         return await autocomplete_movies(interaction, current, [MovieStatus.SCHEDULED])
 
+    @schedule_reschedule.autocomplete("new_date")
+    async def _schedule_reschedule_date_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> list[app_commands.Choice[str]]:
+        return await self._open_date_choices(current)
+
     # ── /schedule fix ─────────────────────────────────────────────────────
 
     @schedule.command(
@@ -308,6 +319,29 @@ class ScheduleCog(commands.Cog, name="Schedule"):
             lines.append(f"• Week of {wk.strftime('%b %d, %Y')}")
         lines.append("\n-# Discord events will be recreated automatically within 24 h.")
         await interaction.followup.send("\n".join(lines))
+
+    async def _open_date_choices(self, current: str) -> list[app_commands.Choice[str]]:
+        """Return up to 5 upcoming open movie night slots (Wed/Thu with no movie booked)."""
+        all_entries = await self.bot.storage.list_schedule_entries(upcoming_only=False, limit=500)
+        booked = {
+            _aware_utc(e.scheduled_for).astimezone(TZ_EASTERN).date()
+            for e in all_entries
+        }
+        choices = []
+        slot = next_movie_night()
+        for _ in range(60):
+            slot_eastern = slot.astimezone(TZ_EASTERN)
+            slot_date = slot_eastern.date()
+            value = slot_date.strftime("%Y-%m-%d")
+            if slot_date not in booked:
+                day = slot_eastern.day
+                label = f"{slot_eastern.strftime('%A, %B')} {day} {slot_eastern.year}"
+                if not current or current in value or current.lower() in label.lower():
+                    choices.append(app_commands.Choice(name=f"{label} ({value})"[:100], value=value))
+                if len(choices) >= 5:
+                    break
+            slot = next_movie_night_after(slot)
+        return choices
 
     @staticmethod
     def _find_first_gap(entries_asc: list) -> date | None:

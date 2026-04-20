@@ -108,7 +108,6 @@ class StashCog(commands.Cog, name="Stash"):
     @app_commands.describe(
         title="Movie title",
         season="Seasonal collection to tag this movie under (required)",
-        year="Release year (auto-detected from OMDB if omitted)",
         notes="Optional notes or comments",
     )
     @app_commands.choices(season=SEASON_CHOICES)
@@ -117,34 +116,28 @@ class StashCog(commands.Cog, name="Stash"):
         interaction: discord.Interaction,
         title: str,
         season: str,
-        year: int | None = None,
         notes: str | None = None,
     ):
         await interaction.response.defer(ephemeral=True)
 
-        # When year is omitted, search OMDB and let the user pick
-        if year is None:
-            results = await self.bot.media.search_titles(title)
-            if not results:
-                await interaction.followup.send(
-                    f"⚠️ Could not find **{title}** on OMDB. "
-                    f"Please provide the year manually: `/stash add title:{title} season:{season} year:YYYY`",
-                    ephemeral=True,
-                )
-                return
-            if len(results) == 1:
-                year = int(results[0]["Year"][:4])
-                omdb_data = await self.bot.media.fetch_metadata(title, year)
-            else:
-                view = MovieSelectView(results, bot=self.bot, interaction=interaction, notes=notes, season=season)
-                await interaction.followup.send(
-                    f"Found **{len(results)}** results for **{title}** — which one?",
-                    view=view,
-                    ephemeral=True,
-                )
-                return
-        else:
+        results = await self.bot.media.search_titles(title)
+        if not results:
+            await interaction.followup.send(
+                f"⚠️ Could not find **{title}** on OMDB. Please check the title and try again.",
+                ephemeral=True,
+            )
+            return
+        if len(results) == 1:
+            year = int(results[0]["Year"][:4])
             omdb_data = await self.bot.media.fetch_metadata(title, year)
+        else:
+            view = MovieSelectView(results, bot=self.bot, interaction=interaction, notes=notes, season=season)
+            await interaction.followup.send(
+                f"Found **{len(results)}** results for **{title}** — which one?",
+                view=view,
+                ephemeral=True,
+            )
+            return
 
         tags = tags_from_omdb(omdb_data)
 
