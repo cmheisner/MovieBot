@@ -22,6 +22,7 @@ COGS = [
     "bot.cogs.maintenance",
     "bot.cogs.profile",
     "bot.cogs.help",
+    "bot.cogs.admin",
 ]
 
 
@@ -73,6 +74,7 @@ class MovieBotClient(commands.Bot):
             if config.plex_url and config.plex_token
             else NoOpPlexClient()
         )
+        self.pending_restart: bool = False
 
     def get_active_channel_id(self, intended_channel_id: int) -> int:
         """In dev mode, redirect all channel sends to the bot-testing channel."""

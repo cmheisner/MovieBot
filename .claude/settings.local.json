@@ -17,7 +17,8 @@
       "Bash(python -m venv venv)",
       "Bash(d:/Projects/MovieBot/venv/Scripts/pip install:*)",
       "Bash(venv/Scripts/python main.py)",
-      "Bash(python *)"
+      "Bash(python *)",
+      "Bash(git *)"
     ]
   }
 }

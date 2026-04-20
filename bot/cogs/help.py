@@ -81,6 +81,15 @@ class HelpCog(commands.Cog, name="Help"):
             inline=False,
         )
 
+        embed.add_field(
+            name="🔧 Admin",
+            value=(
+                "`/bot restart` — [Admin] Gracefully restart the bot\n"
+                "`/bot update` — [Admin] Pull latest code from git and restart"
+            ),
+            inline=False,
+        )
+
         embed.set_footer(text="Movie nights: Wed & Thu at 10:30 PM ET")
 
         await interaction.followup.send(embed=embed, ephemeral=True)
