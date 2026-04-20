@@ -12,7 +12,7 @@ from bot.constants import TZ_EASTERN
 from bot.models.movie import Movie, MovieStatus
 from bot.utils.apple_tv import find_apple_tv_url, resolve_event_image
 from bot.utils.genres import build_role_mention_string
-from bot.utils.embeds import SCHEDULE_COLOR
+from bot.utils.embeds import SCHEDULE_COLOR, stash_list_embed
 from bot.utils.time_utils import format_dt_eastern
 
 log = logging.getLogger(__name__)
@@ -33,7 +33,7 @@ _WATCHED_CHECK_TIME = time(hour=2, minute=0, tzinfo=TZ_EASTERN)
 _REMINDER_TIME = time(hour=22, minute=0, tzinfo=TZ_EASTERN)
 
 
-class MaintenanceCog(commands.Cog):
+class MaintenanceCog(commands.Cog, name="Maintenance"):
 
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
@@ -454,6 +454,42 @@ class MaintenanceCog(commands.Cog):
             log.error("Auto events: failed to create event for %r: %s", movie.title, exc)
             return False
 
+    # ── #stash channel refresh ───────────────────────────────────────────
+
+    async def _run_refresh_stash_channel(self) -> None:
+        channel = self.bot.get_channel(self.bot.config.stash_channel_id)
+        if not channel:
+            log.warning("Stash refresh: could not find #stash channel.")
+            return
+
+        try:
+            async for msg in channel.history(limit=20):
+                if msg.author == self.bot.user:
+                    await msg.delete()
+        except Exception as exc:
+            log.warning("Stash refresh: could not clear channel: %s", exc)
+            return
+
+        try:
+            movies = await self.bot.storage.list_movies(status=MovieStatus.STASH)
+        except Exception as exc:
+            log.error("Stash refresh: could not fetch movies: %s", exc)
+            return
+
+        plex_availability: dict[int, bool] = {}
+        for m in movies:
+            try:
+                plex_availability[m.id] = await self.bot.plex.check_movie(m.title)
+            except Exception:
+                plex_availability[m.id] = False
+
+        embed = stash_list_embed(movies, status_label="Stash", plex_availability=plex_availability)
+        try:
+            await channel.send(embed=embed)
+            log.info("Stash refresh: posted stash list (%d movies) to #stash.", len(movies))
+        except Exception as exc:
+            log.error("Stash refresh: failed to post: %s", exc)
+
     # ── #schedule channel refresh ────────────────────────────────────────
 
     @tasks.loop(time=_SCHEDULE_POST_TIME)
@@ -578,6 +614,8 @@ class MaintenanceCog(commands.Cog):
             log.info("Schedule refresh: posted %d embed(s) to #schedule.", len(all_embeds))
         except Exception as exc:
             log.error("Schedule refresh: failed to post: %s", exc)
+
+        await self._run_refresh_stash_channel()
 
     # ── #news genre role announcement ────────────────────────────────────
 

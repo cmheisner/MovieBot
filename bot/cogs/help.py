@@ -20,30 +20,24 @@ class HelpCog(commands.Cog, name="Help"):
         )
 
         embed.add_field(
-            name="🎬 Stash",
+            name="💼 Stash",
             value=(
-                "`/stash add` — Add a movie (season required; genres auto-tagged from OMDB)\n"
                 "`/stash list` — List movies currently in the stash\n"
+                "`/stash add` — Add a movie (season required; genres auto-tagged from OMDB)\n"
                 "`/stash remove` — Remove a movie from the stash"
             ),
             inline=False,
         )
 
         embed.add_field(
-            name="🗓️ Season",
-            value="`/season tag` — Tag a movie to a seasonal collection",
-            inline=False,
-        )
-
-        embed.add_field(
-            name="📅 Schedule",
+            name="🗓️ Schedule",
             value=(
                 "`/schedule list` — Show upcoming movies\n"
                 "`/schedule add` — Schedule a stash or skipped movie\n"
                 "`/schedule remove` — Remove a scheduled movie (returns to stash)\n"
                 "`/schedule reschedule` — Move a scheduled movie to a new date\n"
-                "`/schedule fix` — Detect gap weeks and cascade future entries back\n"
-                "`/schedule calendar` — Show the calendar for a given month/year"
+                "`/schedule calendar` — Show the calendar for a given month/year\n"
+                "`/schedule fix` — Detect gap weeks and cascade future entries back"
             ),
             inline=False,
         )
@@ -68,7 +62,7 @@ class HelpCog(commands.Cog, name="Help"):
         )
 
         embed.add_field(
-            name="💬 Reviews",
+            name="⭐ Reviews",
             value=(
                 "`/reviews best` — Post the best audience reviews for a movie\n"
                 "`/reviews worst` — Post the worst audience reviews for a movie"

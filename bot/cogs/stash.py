@@ -82,10 +82,10 @@ class MovieSelectView(discord.ui.View):
             return
 
         embed = movie_card(movie, title_prefix="✅ Added to stash: ")
-        stash_ch = self.bot.get_channel(self.bot.get_active_channel_id(self.bot.config.stash_channel_id))
-        if stash_ch and stash_ch != self.original_interaction.channel:
-            await stash_ch.send(embed=embed)
         await interaction.edit_original_response(content=None, embed=embed, view=None)
+        maintenance = self.bot.get_cog("Maintenance")
+        if maintenance:
+            await maintenance._run_refresh_stash_channel()
 
     async def on_timeout(self):
         try:
@@ -158,10 +158,10 @@ class StashCog(commands.Cog, name="Stash"):
             return
 
         embed = movie_card(movie, title_prefix="✅ Added to stash: ")
-        stash_ch = self.bot.get_channel(self.bot.get_active_channel_id(self.bot.config.stash_channel_id))
-        if stash_ch and stash_ch != interaction.channel:
-            await stash_ch.send(embed=embed)
         await interaction.followup.send(embed=embed, ephemeral=True)
+        maintenance = self.bot.get_cog("Maintenance")
+        if maintenance:
+            await maintenance._run_refresh_stash_channel()
 
     # ── /stash list ───────────────────────────────────────────────────────
 
@@ -200,6 +200,9 @@ class StashCog(commands.Cog, name="Stash"):
 
         await self.bot.storage.update_movie(m.id, status=MovieStatus.SKIPPED)
         await interaction.followup.send(f"🗑️ **{m.display_title}** removed from the stash.", ephemeral=True)
+        maintenance = self.bot.get_cog("Maintenance")
+        if maintenance:
+            await maintenance._run_refresh_stash_channel()
 
     @stash_remove.autocomplete("movie")
     async def _stash_remove_autocomplete(
