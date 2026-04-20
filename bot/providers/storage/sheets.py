@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 import gspread
+from gspread.exceptions import APIError
 from google.oauth2.service_account import Credentials
 
 from bot.models.movie import Movie, MovieStatus, TAG_NAMES, empty_tags
@@ -38,6 +39,11 @@ DEFAULT_SCHEDULE_HEADERS = [
 DEFAULT_TZ_HEADERS = ["user_id", "tz_name"]
 
 _CACHE_TTL = 60  # seconds — direct Sheets edits are visible within this window
+
+# Retry policy for Sheets init. The per-minute read quota is the common culprit
+# when the service crash-loops; back off long enough that the window resets.
+_INIT_RETRY_STATUSES = frozenset({429, 500, 502, 503, 504})
+_INIT_RETRY_DELAYS = (5.0, 15.0, 45.0)
 
 
 class _SheetCache:
@@ -147,7 +153,22 @@ class GoogleSheetsStorageProvider(StorageProvider):
                 self._load_header_map(name)
             log.info("Sheets: loaded header maps: %s", {k: list(v.keys()) for k, v in self._cols.items()})
 
-        await asyncio.to_thread(_init)
+        attempts = (0.0, *_INIT_RETRY_DELAYS)
+        for i, delay in enumerate(attempts):
+            if delay:
+                await asyncio.sleep(delay)
+            try:
+                await asyncio.to_thread(_init)
+                return
+            except APIError as exc:
+                status = getattr(getattr(exc, "response", None), "status_code", None)
+                is_last = i == len(attempts) - 1
+                if status not in _INIT_RETRY_STATUSES or is_last:
+                    raise
+                log.warning(
+                    "Sheets init: got HTTP %s; retrying in %.0fs (attempt %d/%d)",
+                    status, attempts[i + 1], i + 1, len(attempts) - 1,
+                )
 
     async def close(self) -> None:
         pass
