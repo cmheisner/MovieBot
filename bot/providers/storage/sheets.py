@@ -461,6 +461,16 @@ class GoogleSheetsStorageProvider(StorageProvider):
         await asyncio.to_thread(_do)
         return await self.get_movie(movie_id)
 
+    async def delete_movie(self, movie_id: int) -> None:
+        def _do():
+            ws = self._ws("movies")
+            row_idx = self._find_row_idx(ws, movie_id, "movies")
+            if row_idx is not None:
+                ws.delete_rows(row_idx)
+                self._cache.drop("movies")
+
+        await asyncio.to_thread(_do)
+
     # ── Polls ────────────────────────────────────────────────────────────
 
     async def add_poll(
@@ -568,6 +578,68 @@ class GoogleSheetsStorageProvider(StorageProvider):
 
         await asyncio.to_thread(_do)
         return await self.get_poll(poll_id)
+
+    async def list_polls(self, status: Optional[str] = None) -> list[Poll]:
+        def _do():
+            status_col = self._cols["polls"].get("status")
+            id_col = self._cols["polls"].get("id", 0)
+            results = []
+            for r in self._rows("polls"):
+                if not r or id_col >= len(r) or not r[id_col]:
+                    continue
+                row_status = r[status_col] if (status_col is not None and status_col < len(r)) else ""
+                if status is not None and row_status != status:
+                    continue
+                results.append(self._row_to_poll(r, self._get_entries_sync(int(r[id_col]))))
+            return results
+
+        return await asyncio.to_thread(_do)
+
+    async def list_poll_entries(self) -> list[PollEntry]:
+        def _do():
+            id_col = self._cols["poll_entries"].get("id", 0)
+            return [
+                self._row_to_poll_entry(r)
+                for r in self._rows("poll_entries")
+                if r and id_col < len(r) and r[id_col]
+            ]
+
+        return await asyncio.to_thread(_do)
+
+    async def delete_poll(self, poll_id: int) -> None:
+        def _do():
+            ws_entries = self._ws("poll_entries")
+            poll_id_col = self._cols["poll_entries"].get("poll_id")
+            # Collect all matching entry row indices, then delete bottom-up
+            # so earlier deletions don't shift later indices.
+            if poll_id_col is not None:
+                all_rows = ws_entries.get_all_values()
+                to_delete = [
+                    i for i, r in enumerate(all_rows[1:], start=2)
+                    if r and poll_id_col < len(r) and r[poll_id_col] == str(poll_id)
+                ]
+                for row_idx in sorted(to_delete, reverse=True):
+                    ws_entries.delete_rows(row_idx)
+                if to_delete:
+                    self._cache.drop("poll_entries")
+
+            ws_polls = self._ws("polls")
+            poll_row = self._find_row_idx(ws_polls, poll_id, "polls")
+            if poll_row is not None:
+                ws_polls.delete_rows(poll_row)
+                self._cache.drop("polls")
+
+        await asyncio.to_thread(_do)
+
+    async def delete_poll_entry(self, entry_id: int) -> None:
+        def _do():
+            ws = self._ws("poll_entries")
+            row_idx = self._find_row_idx(ws, entry_id, "poll_entries")
+            if row_idx is not None:
+                ws.delete_rows(row_idx)
+                self._cache.drop("poll_entries")
+
+        await asyncio.to_thread(_do)
 
     # ── Schedule ─────────────────────────────────────────────────────────
 

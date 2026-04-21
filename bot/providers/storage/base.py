@@ -53,6 +53,10 @@ class StorageProvider(ABC):
     async def update_movie(self, movie_id: int, **fields) -> Movie:
         pass
 
+    @abstractmethod
+    async def delete_movie(self, movie_id: int) -> None:
+        pass
+
     # ── Polls ────────────────────────────────────────────────────────────
 
     @abstractmethod
@@ -77,6 +81,22 @@ class StorageProvider(ABC):
 
     @abstractmethod
     async def close_poll(self, poll_id: int) -> Poll:
+        pass
+
+    @abstractmethod
+    async def list_polls(self, status: Optional[str] = None) -> list[Poll]:
+        """Return all polls, optionally filtered by status. Includes entries."""
+
+    @abstractmethod
+    async def list_poll_entries(self) -> list[PollEntry]:
+        """Return every poll_entries row (used by sanity checks)."""
+
+    @abstractmethod
+    async def delete_poll(self, poll_id: int) -> None:
+        """Delete a poll and all of its entries."""
+
+    @abstractmethod
+    async def delete_poll_entry(self, entry_id: int) -> None:
         pass
 
     # ── Schedule ─────────────────────────────────────────────────────────

@@ -12,6 +12,8 @@ from discord import app_commands
 from discord.ext import commands
 
 from bot.constants import LOG_FILE_PATH
+from bot.utils.runtime import git_short_sha
+from bot.utils.sanity import run_sanity_check
 
 log = logging.getLogger(__name__)
 
@@ -66,6 +68,8 @@ class AdminCog(commands.Cog, name="Admin"):
         log.info("Update requested by %s (id=%d).", interaction.user, interaction.user.id)
         await interaction.response.defer(ephemeral=True)
 
+        sha_before = await asyncio.to_thread(git_short_sha)
+
         try:
             proc = await asyncio.create_subprocess_exec(
                 "git", "pull",
@@ -98,12 +102,16 @@ class AdminCog(commands.Cog, name="Admin"):
             )
             return
 
+        sha_after = await asyncio.to_thread(git_short_sha)
         already_up = "already up to date" in output.lower()
         status = "Already up to date — restarting anyway." if already_up else "✅ Code updated."
         await interaction.followup.send(
             f"{status} Restarting now...\n```\n{output}\n```", ephemeral=True
         )
-        log.info("git pull succeeded:\n%s", output)
+        if sha_before == sha_after:
+            log.info("git pull succeeded — HEAD unchanged at %s", sha_before)
+        else:
+            log.info("git pull succeeded — HEAD: %s → %s", sha_before, sha_after)
         self.bot.pending_restart = True
         await asyncio.sleep(1)
         await self.bot.close()
@@ -210,6 +218,52 @@ class AdminCog(commands.Cog, name="Admin"):
         await interaction.followup.send(
             f"**{header}** — attached as file (output exceeded inline limit).",
             file=discord.File(buf, filename="moviebot.log"),
+            ephemeral=True,
+        )
+
+    # ── /sanity ───────────────────────────────────────────────────────────
+
+    @app_commands.command(
+        name="sanity",
+        description="[Admin] Audit the spreadsheet, auto-fix what's safe, list the rest for human review.",
+    )
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def sanity(self, interaction: discord.Interaction) -> None:
+        log.info("Sanity check requested by %s (id=%d).", interaction.user, interaction.user.id)
+        await interaction.response.defer(ephemeral=True)
+
+        try:
+            report = await run_sanity_check(self.bot.storage)
+        except Exception as exc:
+            log.exception("Sanity check failed.")
+            await interaction.followup.send(f"⚠️ Sanity check failed: {exc}", ephemeral=True)
+            return
+
+        fix_count = len(report.fixes)
+        issue_count = len(report.issues)
+        log.info("Sanity check complete — %d fixed, %d flagged.", fix_count, issue_count)
+
+        parts = [f"**Auto-fixed ({fix_count}):**"]
+        if report.fixes:
+            parts.extend(f"• {line}" for line in report.fixes)
+        else:
+            parts.append("• _(nothing to fix)_")
+        parts.append("")
+        parts.append(f"**Needs human attention ({issue_count}):**")
+        if report.issues:
+            parts.extend(f"• {line}" for line in report.issues)
+        else:
+            parts.append("• _(all clear)_")
+        body = "\n".join(parts)
+
+        if len(body) <= _LOGS_INLINE_CHAR_LIMIT:
+            await interaction.followup.send(body, ephemeral=True)
+            return
+
+        buf = io.BytesIO(body.encode("utf-8"))
+        await interaction.followup.send(
+            f"Sanity report — {fix_count} fixed, {issue_count} flagged (attached).",
+            file=discord.File(buf, filename="sanity.txt"),
             ephemeral=True,
         )
 

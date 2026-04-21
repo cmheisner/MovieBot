@@ -119,7 +119,11 @@ class MovieBotClient(commands.Bot):
         await self.plex.ping()
 
         for cog in COGS:
-            await self.load_extension(cog)
+            try:
+                await self.load_extension(cog)
+            except Exception:
+                log.exception("Failed to load cog: %s", cog)
+                raise
             log.info("Loaded cog: %s", cog)
 
         guild = discord.Object(id=self.config.guild_id)

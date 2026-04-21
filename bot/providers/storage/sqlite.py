@@ -246,6 +246,10 @@ class SQLiteStorageProvider(StorageProvider):
         await self._db.commit()
         return await self.get_movie(movie_id)
 
+    async def delete_movie(self, movie_id: int) -> None:
+        await self._db.execute("DELETE FROM movies WHERE id = ?", (movie_id,))
+        await self._db.commit()
+
     # ── Polls ────────────────────────────────────────────────────────────
 
     async def add_poll(
@@ -316,6 +320,41 @@ class SQLiteStorageProvider(StorageProvider):
         )
         await self._db.commit()
         return await self.get_poll(poll_id)
+
+    async def list_polls(self, status: Optional[str] = None) -> list[Poll]:
+        if status is not None:
+            async with self._db.execute(
+                "SELECT * FROM polls WHERE status = ? ORDER BY created_at ASC", (status,)
+            ) as cur:
+                rows = await cur.fetchall()
+        else:
+            async with self._db.execute("SELECT * FROM polls ORDER BY created_at ASC") as cur:
+                rows = await cur.fetchall()
+        result = []
+        for row in rows:
+            entries = await self._get_poll_entries(row["id"])
+            result.append(_row_to_poll(row, entries))
+        return result
+
+    async def list_poll_entries(self) -> list[PollEntry]:
+        async with self._db.execute("SELECT * FROM poll_entries ORDER BY id ASC") as cur:
+            rows = await cur.fetchall()
+        return [
+            PollEntry(
+                id=r["id"], poll_id=r["poll_id"], movie_id=r["movie_id"],
+                position=r["position"], emoji=r["emoji"],
+            )
+            for r in rows
+        ]
+
+    async def delete_poll(self, poll_id: int) -> None:
+        # poll_entries has ON DELETE CASCADE, so this removes entries too.
+        await self._db.execute("DELETE FROM polls WHERE id = ?", (poll_id,))
+        await self._db.commit()
+
+    async def delete_poll_entry(self, entry_id: int) -> None:
+        await self._db.execute("DELETE FROM poll_entries WHERE id = ?", (entry_id,))
+        await self._db.commit()
 
     # ── Schedule ─────────────────────────────────────────────────────────
 
