@@ -18,7 +18,8 @@
       "Bash(d:/Projects/MovieBot/venv/Scripts/pip install:*)",
       "Bash(venv/Scripts/python main.py)",
       "Bash(python *)",
-      "Bash(git *)"
+      "Bash(git *)",
+      "Read(//home/brandon/.ssh/**)"
     ]
   }
 }

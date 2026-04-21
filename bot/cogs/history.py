@@ -6,7 +6,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from bot.models.movie import MovieStatus
-from bot.utils.embeds import stash_list_embed
+from bot.utils.embeds import stash_list_embeds
 
 log = logging.getLogger(__name__)
 
@@ -37,8 +37,8 @@ class HistoryCog(commands.Cog, name="History"):
         # Sort most-recently-watched first
         movies.sort(key=lambda m: watch_dates.get(m.id) or m.added_at, reverse=True)
 
-        embed = stash_list_embed(movies, status_label="Watched", watch_dates=watch_dates)
-        await interaction.followup.send(embed=embed)
+        embeds = stash_list_embeds(movies, status_label="Watched", watch_dates=watch_dates)
+        await interaction.followup.send(embeds=embeds)
 
     # ── /skipped list ────────────────────────────────────────────────────
 
@@ -47,8 +47,8 @@ class HistoryCog(commands.Cog, name="History"):
         await interaction.response.defer()
         movies = await self.bot.storage.list_movies(status=MovieStatus.SKIPPED)
         movies.sort(key=lambda m: m.added_at, reverse=True)
-        embed = stash_list_embed(movies, status_label="Skipped")
-        await interaction.followup.send(embed=embed)
+        embeds = stash_list_embeds(movies, status_label="Skipped")
+        await interaction.followup.send(embeds=embeds)
 
 
 async def setup(bot):

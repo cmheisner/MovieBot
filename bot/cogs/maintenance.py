@@ -12,7 +12,7 @@ from bot.constants import TZ_EASTERN
 from bot.models.movie import Movie, MovieStatus
 from bot.utils.apple_tv import find_apple_tv_url, resolve_event_image
 from bot.utils.genres import build_role_mention_string
-from bot.utils.embeds import SCHEDULE_COLOR, stash_list_embed
+from bot.utils.embeds import SCHEDULE_COLOR, stash_list_embeds
 from bot.utils.time_utils import format_dt_eastern
 
 log = logging.getLogger(__name__)
@@ -483,10 +483,16 @@ class MaintenanceCog(commands.Cog, name="Maintenance"):
             except Exception:
                 plex_availability[m.id] = False
 
-        embed = stash_list_embed(movies, status_label="Stash", plex_availability=plex_availability)
+        embeds = stash_list_embeds(movies, status_label="Stash", plex_availability=plex_availability)
         try:
-            await channel.send(embed=embed)
-            log.info("Stash refresh: posted stash list (%d movies) to #stash.", len(movies))
+            # Discord allows up to 10 embeds per message. Split into batches
+            # if the stash ever grows past that cap.
+            for i in range(0, len(embeds), 10):
+                await channel.send(embeds=embeds[i:i + 10])
+            log.info(
+                "Stash refresh: posted stash list (%d movies, %d embed(s)) to #stash.",
+                len(movies), len(embeds),
+            )
         except Exception as exc:
             log.error("Stash refresh: failed to post: %s", exc)
 

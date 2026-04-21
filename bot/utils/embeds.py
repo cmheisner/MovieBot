@@ -80,57 +80,127 @@ def _movie_line(m: Movie, *, on_plex: bool = False, watch_date=None) -> str:
     return line
 
 
-def stash_list_embed(
+# Discord's hard cap on embed description is 4096 chars; stay well under it
+# to leave headroom for heading lines and separators when packing.
+_DESC_CHUNK_CAP = 3800
+
+
+def _chunk_sections_into_descriptions(
+    sections: list[tuple[Optional[str], list[str]]],
+    max_chars: int = _DESC_CHUNK_CAP,
+) -> list[str]:
+    """Pack (heading, lines) sections into description strings under max_chars.
+
+    Whole sections stay together when they fit. A section that's larger than
+    max_chars on its own is split line-by-line, and its heading is repeated on
+    each continuation with a '(cont.)' suffix.
+    """
+    chunks: list[str] = []
+    buf: list[str] = []
+    buf_len = 0
+
+    def flush() -> None:
+        nonlocal buf, buf_len
+        if buf:
+            chunks.append("\n".join(buf))
+            buf = []
+            buf_len = 0
+
+    def append(line: str) -> None:
+        nonlocal buf_len
+        buf_len += len(line) + (1 if buf else 0)
+        buf.append(line)
+
+    for heading, lines in sections:
+        section_len = (len(heading) + 1 if heading else 0) + sum(len(l) + 1 for l in lines)
+        separator_len = 1 if buf else 0
+
+        if buf and buf_len + separator_len + section_len > max_chars:
+            flush()
+
+        if section_len <= max_chars:
+            if buf:
+                append("")  # blank line between sections
+            if heading:
+                append(heading)
+            for line in lines:
+                append(line)
+            continue
+
+        # Section too large on its own — split line-by-line, repeating the
+        # heading on each continuation chunk.
+        flush()
+        if heading:
+            append(heading)
+        for line in lines:
+            if buf_len + len(line) + 1 > max_chars:
+                flush()
+                if heading:
+                    append(f"{heading} _(cont.)_")
+            append(line)
+
+    flush()
+    return chunks
+
+
+def _build_stash_sections(
+    movies: list[Movie],
+    plex_availability: dict[int, bool] | None,
+    watch_dates: dict | None,
+) -> list[tuple[Optional[str], list[str]]]:
+    def _line(m: Movie) -> str:
+        return _movie_line(
+            m,
+            on_plex=bool(plex_availability and plex_availability.get(m.id)),
+            watch_date=watch_dates.get(m.id) if watch_dates else None,
+        )
+
+    has_groups = any(m.season for m in movies)
+    if not has_groups:
+        return [(None, [_line(m) for m in movies])]
+
+    grouped: dict[str, list[Movie]] = {}
+    ungrouped: list[Movie] = []
+    for m in movies:
+        if m.season:
+            grouped.setdefault(m.season, []).append(m)
+        else:
+            ungrouped.append(m)
+
+    sections: list[tuple[Optional[str], list[str]]] = [
+        (f"**{season}**", [_line(m) for m in group])
+        for season, group in grouped.items()
+    ]
+    if ungrouped:
+        sections.append(("**Ungrouped**", [_line(m) for m in ungrouped]))
+    return sections
+
+
+def stash_list_embeds(
     movies: list[Movie],
     status_label: str = "stash",
     plex_availability: dict[int, bool] | None = None,
     watch_dates: dict | None = None,
-) -> discord.Embed:
-    embed = discord.Embed(
-        title=f"🎬 Movie Stash — {status_label.capitalize()}",
-        color=STASH_COLOR,
-    )
+) -> list[discord.Embed]:
+    """Render the stash list as one or more embeds, splitting long lists to
+    stay under Discord's 4096-char embed description cap."""
+    title = f"🎬 Movie Stash — {status_label.capitalize()}"
+    footer = f"{len(movies)} movie(s)"
+
     if not movies:
+        embed = discord.Embed(title=title, color=STASH_COLOR)
         embed.description = "_No movies found._"
-        return embed
+        return [embed]
 
-    has_groups = any(m.season for m in movies)
+    sections = _build_stash_sections(movies, plex_availability, watch_dates)
+    descriptions = _chunk_sections_into_descriptions(sections)
 
-    if has_groups:
-        # Preserve group order by first-seen insertion order
-        seen: dict[str, list[Movie]] = {}
-        ungrouped: list[Movie] = []
-        for m in movies:
-            if m.season:
-                seen.setdefault(m.season, []).append(m)
-            else:
-                ungrouped.append(m)
-
-        sections: list[str] = []
-        for season_name, group_movies in seen.items():
-            block = [f"**{season_name}**"] + [
-                _movie_line(m, on_plex=bool(plex_availability and plex_availability.get(m.id)),
-                            watch_date=watch_dates.get(m.id) if watch_dates else None)
-                for m in group_movies
-            ]
-            sections.append("\n".join(block))
-        if ungrouped:
-            block = ["**Ungrouped**"] + [
-                _movie_line(m, on_plex=bool(plex_availability and plex_availability.get(m.id)),
-                            watch_date=watch_dates.get(m.id) if watch_dates else None)
-                for m in ungrouped
-            ]
-            sections.append("\n".join(block))
-        embed.description = "\n\n".join(sections)
-    else:
-        embed.description = "\n".join(
-            _movie_line(m, on_plex=bool(plex_availability and plex_availability.get(m.id)),
-                        watch_date=watch_dates.get(m.id) if watch_dates else None)
-            for m in movies
-        )
-
-    embed.set_footer(text=f"{len(movies)} movie(s)")
-    return embed
+    embeds = [
+        discord.Embed(description=desc, color=STASH_COLOR) for desc in descriptions
+    ]
+    embeds[0].title = title
+    embeds[-1].set_footer(text=footer)
+    return embeds
 
 
 def poll_embed(
@@ -252,23 +322,29 @@ def build_calendar_embed(
     return embed
 
 
-def schedule_embed(
+def schedule_embeds(
     entries: list[ScheduleEntry],
     movies: dict[int, Movie],
     plex_availability: dict[int, bool] | None = None,
-) -> discord.Embed:
-    embed = discord.Embed(title="🗓️ Movie Night Schedule", color=SCHEDULE_COLOR)
+) -> list[discord.Embed]:
+    """Render the schedule list as one or more embeds."""
+    title = "🗓️ Movie Night Schedule"
     if not entries:
+        embed = discord.Embed(title=title, color=SCHEDULE_COLOR)
         embed.description = "_Nothing scheduled yet._"
-        return embed
+        return [embed]
+
     lines = []
     for e in entries:
         movie = movies.get(e.movie_id)
-        title = movie.display_title if movie else f"Movie #{e.movie_id}"
+        name = movie.display_title if movie else f"Movie #{e.movie_id}"
         date_str = format_dt_eastern(e.scheduled_for)
-        line = f"**{title}** — {date_str}"
-        if plex_availability and e.movie_id in plex_availability:
-            line += " 📀 On Plex" if plex_availability[e.movie_id] else ""
+        line = f"**{name}** — {date_str}"
+        if plex_availability and e.movie_id in plex_availability and plex_availability[e.movie_id]:
+            line += " 📀 On Plex"
         lines.append(line)
-    embed.description = "\n".join(lines)
-    return embed
+
+    descriptions = _chunk_sections_into_descriptions([(None, lines)])
+    embeds = [discord.Embed(description=desc, color=SCHEDULE_COLOR) for desc in descriptions]
+    embeds[0].title = title
+    return embeds

@@ -9,7 +9,7 @@ from discord.ext import commands
 
 from bot.constants import TZ_EASTERN, MOVIE_NIGHT_HOUR, MOVIE_NIGHT_MINUTE
 from bot.models.movie import MovieStatus
-from bot.utils.embeds import schedule_embed, build_calendar_embed
+from bot.utils.embeds import schedule_embeds, build_calendar_embed
 from bot.utils.movie_lookup import autocomplete_movies, resolve_movie_by_id
 from bot.utils.time_utils import next_movie_night, next_movie_night_after, format_dt_eastern
 
@@ -73,8 +73,8 @@ class ScheduleCog(commands.Cog, name="Schedule"):
             if m:
                 movies_by_id[e.movie_id] = m
         plex_availability = await _plex_map(self.bot.plex, list(movies_by_id.values()))
-        embed = schedule_embed(entries, movies_by_id, plex_availability)
-        await interaction.followup.send(embed=embed)
+        embeds = schedule_embeds(entries, movies_by_id, plex_availability)
+        await interaction.followup.send(embeds=embeds)
 
     # ── /schedule add ─────────────────────────────────────────────────────
 

@@ -7,7 +7,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from bot.models.movie import MovieStatus
-from bot.utils.embeds import movie_card, stash_list_embed
+from bot.utils.embeds import movie_card, stash_list_embeds
 from bot.utils.movie_lookup import autocomplete_movies, resolve_movie_by_id
 from bot.utils.tags import tags_from_omdb
 from bot.cogs.seasons import SEASON_CHOICES
@@ -172,8 +172,8 @@ class StashCog(commands.Cog, name="Stash"):
         plex_availability = {}
         for m in movies:
             plex_availability[m.id] = await self.bot.plex.check_movie(m.title)
-        embed = stash_list_embed(movies, status_label="Stash", plex_availability=plex_availability)
-        await interaction.followup.send(embed=embed)
+        embeds = stash_list_embeds(movies, status_label="Stash", plex_availability=plex_availability)
+        await interaction.followup.send(embeds=embeds)
 
     # ── /stash remove ─────────────────────────────────────────────────────
 
