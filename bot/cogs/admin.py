@@ -22,6 +22,8 @@ _DEV_STATE_CHOICES = [
     app_commands.Choice(name="off", value="off"),
 ]
 
+_SANITY_INLINE_CHAR_LIMIT = 1900
+
 
 class AdminCog(commands.Cog, name="Admin"):
 
@@ -212,7 +214,7 @@ class AdminCog(commands.Cog, name="Admin"):
             parts.append("• _(all clear)_")
         body = "\n".join(parts)
 
-        if len(body) <= _LOGS_INLINE_CHAR_LIMIT:
+        if len(body) <= _SANITY_INLINE_CHAR_LIMIT:
             await interaction.followup.send(body, ephemeral=True)
             return
 
