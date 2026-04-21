@@ -4,8 +4,6 @@ import asyncio
 import io
 import logging
 import os
-import re
-from collections import deque
 from typing import Optional
 
 import discord
@@ -19,93 +17,9 @@ from bot.utils.sanity import run_sanity_check
 
 log = logging.getLogger(__name__)
 
-_LOGS_MAX_ENTRIES = 500
-_LOGS_DEFAULT_ENTRIES = 50
-_LOGS_INLINE_CHAR_LIMIT = 1900  # Leave headroom under Discord's 2000-char message cap.
-_LOGS_SUMMARY_MAX_ITEMS = 10
-_LOGS_SUMMARY_LINE_CAP = 220
-
-# Each log entry starts with an asctime header like "2026-04-20 14:05:01,123 ".
-# Continuation lines (tracebacks, multi-line messages) start with whitespace or
-# a non-digit and belong to the previous entry.
-_LOG_ENTRY_START = re.compile(r"^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}")
-
-_LEVEL_MARKERS = {
-    "warn": ("[WARNING]", "[ERROR]", "[CRITICAL]"),
-    "error": ("[ERROR]", "[CRITICAL]"),
-}
-_SUMMARY_MARKERS = ("[WARNING]", "[ERROR]", "[CRITICAL]")
-
-
-def _read_tail(
-    path: str,
-    entries: int,
-    filter_substr: Optional[str],
-    min_level: Optional[str] = None,
-) -> list[list[str]]:
-    """Return the last *entries* matching log entries.
-
-    A log entry is a header line (matching `_LOG_ENTRY_START`) plus any
-    continuation lines that follow it until the next header. Each returned
-    entry is a list of lines, header first.
-    """
-    if not os.path.exists(path):
-        raise FileNotFoundError(path)
-    needle = filter_substr.lower() if filter_substr else None
-    level_markers = _LEVEL_MARKERS.get(min_level) if min_level else None
-
-    def accept(entry: list[str]) -> bool:
-        if not entry:
-            return False
-        header = entry[0]
-        if level_markers and not any(m in header for m in level_markers):
-            return False
-        if needle:
-            return any(needle in line.lower() for line in entry)
-        return True
-
-    kept: deque[list[str]] = deque(maxlen=entries)
-    current: list[str] = []
-    with open(path, "r", encoding="utf-8", errors="replace") as f:
-        for raw in f:
-            line = raw.rstrip("\n")
-            if _LOG_ENTRY_START.match(line):
-                if accept(current):
-                    kept.append(current)
-                current = [line]
-            elif current:
-                current.append(line)
-            # Stray continuation lines with no preceding header are dropped.
-    if accept(current):
-        kept.append(current)
-    return list(kept)
-
-
-def _summarize_attention_entries(entries: list[list[str]]) -> Optional[str]:
-    """Return a short inline summary of WARNING/ERROR/CRITICAL headers, or None."""
-    attention = [e[0] for e in entries if any(m in e[0] for m in _SUMMARY_MARKERS)]
-    if not attention:
-        return None
-    shown = attention[-_LOGS_SUMMARY_MAX_ITEMS:]
-    lines = [
-        f"• {h if len(h) <= _LOGS_SUMMARY_LINE_CAP else h[:_LOGS_SUMMARY_LINE_CAP] + '…'}"
-        for h in shown
-    ]
-    suffix = ""
-    if len(attention) > len(shown):
-        suffix = f"\n_(+{len(attention) - len(shown)} more in attachment)_"
-    return f"**{len(attention)} warning/error entr(ies) in tail:**\n" + "\n".join(lines) + suffix
-
-
 _DEV_STATE_CHOICES = [
     app_commands.Choice(name="on", value="on"),
     app_commands.Choice(name="off", value="off"),
-]
-
-_LEVEL_CHOICES = [
-    app_commands.Choice(name="all", value="all"),
-    app_commands.Choice(name="warn+ (warnings and errors)", value="warn"),
-    app_commands.Choice(name="error+ (errors only)", value="error"),
 ]
 
 
@@ -239,81 +153,29 @@ class AdminCog(commands.Cog, name="Admin"):
 
     @app_commands.command(
         name="logs",
-        description="[Admin] Show recent bot log output.",
+        description="[Admin] Attach the bot log file.",
     )
-    @app_commands.describe(
-        entries=f"How many log entries to return (default {_LOGS_DEFAULT_ENTRIES}, max {_LOGS_MAX_ENTRIES}).",
-        level="Minimum level to include (default: all).",
-        filter="Case-insensitive substring to filter entries by (optional).",
-    )
-    @app_commands.choices(level=_LEVEL_CHOICES)
     @app_commands.checks.has_permissions(manage_guild=True)
-    async def logs(
-        self,
-        interaction: discord.Interaction,
-        entries: int = _LOGS_DEFAULT_ENTRIES,
-        level: Optional[app_commands.Choice[str]] = None,
-        filter: Optional[str] = None,
-    ) -> None:
+    async def logs(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer(ephemeral=True)
 
-        entries = max(1, min(_LOGS_MAX_ENTRIES, entries))
         path = LOG_FILE_PATH
-        min_level = level.value if level and level.value != "all" else None
+        if not os.path.exists(path):
+            await interaction.followup.send(
+                f"⚠️ Log file not found at `{path}`.", ephemeral=True
+            )
+            return
 
         try:
-            tail = await asyncio.to_thread(_read_tail, path, entries, filter, min_level)
-        except FileNotFoundError:
             await interaction.followup.send(
-                f"⚠️ Log file not found at `{path}`. "
-                "The bot may not have written any logs yet, or the working "
-                "directory is not the project root.",
+                f"📄 `{path}`",
+                file=discord.File(path, filename="moviebot.log"),
                 ephemeral=True,
             )
-            return
-        except Exception as exc:
-            await interaction.followup.send(f"⚠️ Could not read logs: {exc}", ephemeral=True)
-            return
-
-        if not tail:
-            bits = []
-            if min_level:
-                bits.append(f"level={min_level!r}")
-            if filter:
-                bits.append(f"filter={filter!r}")
-            suffix = f" ({', '.join(bits)})" if bits else ""
-            msg = f"_No log entries matched{suffix}._" if bits else "_Log file is empty._"
-            await interaction.followup.send(msg, ephemeral=True)
-            return
-
-        flat_lines: list[str] = [line for entry in tail for line in entry]
-        joined = "\n".join(flat_lines)
-        header_parts = [f"Last {len(tail)} entr(ies)", f"{len(flat_lines)} line(s)"]
-        if min_level:
-            header_parts.append(f"level={min_level}")
-        if filter:
-            header_parts.append(f"filter={filter!r}")
-        header = " · ".join(header_parts)
-
-        if len(joined) <= _LOGS_INLINE_CHAR_LIMIT:
+        except discord.HTTPException as exc:
             await interaction.followup.send(
-                f"**{header}**\n```\n{joined}\n```",
-                ephemeral=True,
+                f"⚠️ Could not attach log file: {exc}", ephemeral=True
             )
-            return
-
-        summary = _summarize_attention_entries(tail)
-        prefix = f"**{header}** — attached as file (output exceeded inline limit)."
-        content = f"{prefix}\n\n{summary}" if summary else prefix
-        # Hard cap in case the summary itself is long.
-        if len(content) > _LOGS_INLINE_CHAR_LIMIT:
-            content = content[:_LOGS_INLINE_CHAR_LIMIT - 1] + "…"
-        buf = io.BytesIO(joined.encode("utf-8"))
-        await interaction.followup.send(
-            content,
-            file=discord.File(buf, filename="moviebot.log"),
-            ephemeral=True,
-        )
 
     # ── /sanity ───────────────────────────────────────────────────────────
 

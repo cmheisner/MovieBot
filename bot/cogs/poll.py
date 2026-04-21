@@ -32,8 +32,8 @@ class PollCog(commands.Cog, name="Poll"):
         poll = await self.bot.storage.get_latest_open_poll()
         if poll and poll.closes_at and datetime.now(timezone.utc) >= poll.closes_at:
             log.info("Auto-closing poll id=%d", poll.id)
-            general_ch = self.bot.get_channel(self.bot.get_active_channel_id(self.bot.config.general_channel_id))
-            await self._do_close_poll(poll, general_ch)
+            home_ch = self.bot.get_channel(int(poll.channel_id))
+            await self._do_close_poll(poll, home_ch)
 
     @auto_close_loop.before_loop
     async def before_auto_close(self):
@@ -137,11 +137,6 @@ class PollCog(commands.Cog, name="Poll"):
             else None
         )
 
-        general_ch = self.bot.get_channel(self.bot.get_active_channel_id(self.bot.config.general_channel_id))
-        if not general_ch:
-            await interaction.followup.send("⚠️ Could not find the general channel.", ephemeral=True)
-            return
-
         closes_str = format_dt_eastern(closes_at) if closes_at else None
         target_str = format_dt_eastern(target_date)
         temp_entries = [
@@ -157,13 +152,13 @@ class PollCog(commands.Cog, name="Poll"):
             plex_availability=plex_availability,
         )
 
-        msg = await general_ch.send(embed=embed)
+        msg = await interaction.followup.send(embed=embed, wait=True)
         for emoji in emojis:
             await msg.add_reaction(emoji)
 
         poll = await self.bot.storage.add_poll(
             discord_msg_id=str(msg.id),
-            channel_id=str(general_ch.id),
+            channel_id=str(interaction.channel_id),
             movie_ids=[m.id for m in season_movies],
             emojis=emojis,
             closes_at=closes_at,
@@ -174,10 +169,10 @@ class PollCog(commands.Cog, name="Poll"):
             await self.bot.storage.update_movie(m.id, status=MovieStatus.NOMINATED)
 
         maintenance = self.bot.get_cog("Maintenance")
-        if maintenance:
-            await maintenance.post_poll_announcement(general_ch)
+        if maintenance and interaction.channel is not None:
+            await maintenance.post_poll_announcement(interaction.channel)
 
-        reply = f"✅ Poll created in {general_ch.mention} for **{target_str}** (poll id={poll.id})."
+        reply = f"✅ Poll created for **{target_str}** (poll id={poll.id})."
         if closes_at:
             reply += f"\nVoting closes {closes_str}."
         await interaction.followup.send(reply, ephemeral=True)
@@ -241,8 +236,9 @@ class PollCog(commands.Cog, name="Poll"):
             await interaction.followup.send("⚠️ No open poll found.", ephemeral=True)
             return
 
-        general_ch = self.bot.get_channel(int(poll.channel_id))
-        result = await self._do_close_poll(poll, general_ch)
+        # _do_close_poll handles state changes; pass channel=None so it doesn't
+        # double-post — we announce the results in the invocation channel below.
+        result = await self._do_close_poll(poll, None)
         await interaction.followup.send(result)
 
     # ── helpers ───────────────────────────────────────────────────────────

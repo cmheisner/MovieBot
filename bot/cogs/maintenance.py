@@ -13,6 +13,11 @@ from bot.models.movie import Movie, MovieStatus
 from bot.utils.apple_tv import find_apple_tv_url, resolve_event_image
 from bot.utils.genres import build_role_mention_string
 from bot.utils.embeds import SCHEDULE_COLOR, stash_list_embeds
+from bot.utils.refresh_state import (
+    fingerprint_embeds,
+    load_fingerprint,
+    save_fingerprint,
+)
 from bot.utils.time_utils import format_dt_eastern
 
 log = logging.getLogger(__name__)
@@ -463,14 +468,6 @@ class MaintenanceCog(commands.Cog, name="Maintenance"):
             return
 
         try:
-            async for msg in channel.history(limit=20):
-                if msg.author == self.bot.user:
-                    await msg.delete()
-        except Exception as exc:
-            log.warning("Stash refresh: could not clear channel: %s", exc)
-            return
-
-        try:
             movies = await self.bot.storage.list_movies(status=MovieStatus.STASH)
         except Exception as exc:
             log.error("Stash refresh: could not fetch movies: %s", exc)
@@ -484,11 +481,32 @@ class MaintenanceCog(commands.Cog, name="Maintenance"):
                 plex_availability[m.id] = False
 
         embeds = stash_list_embeds(movies, status_label="Stash", plex_availability=plex_availability)
+        fingerprint = fingerprint_embeds(embeds)
+
+        try:
+            bot_messages = [
+                m async for m in channel.history(limit=20) if m.author == self.bot.user
+            ]
+        except Exception as exc:
+            log.warning("Stash refresh: could not read channel history: %s", exc)
+            return
+
+        if bot_messages and load_fingerprint("stash") == fingerprint:
+            log.info("Stash refresh: no changes since last post — skipping.")
+            return
+
+        for msg in bot_messages:
+            try:
+                await msg.delete()
+            except Exception as exc:
+                log.warning("Stash refresh: could not delete old message %d: %s", msg.id, exc)
+
         try:
             # Discord allows up to 10 embeds per message. Split into batches
             # if the stash ever grows past that cap.
             for i in range(0, len(embeds), 10):
                 await channel.send(embeds=embeds[i:i + 10])
+            save_fingerprint("stash", fingerprint)
             log.info(
                 "Stash refresh: posted stash list (%d movies, %d embed(s)) to #stash.",
                 len(movies), len(embeds),
@@ -510,15 +528,6 @@ class MaintenanceCog(commands.Cog, name="Maintenance"):
         channel = self.bot.get_channel(self.bot.config.schedule_channel_id)
         if not channel:
             log.warning("Schedule refresh: could not find #schedule channel.")
-            return
-
-        # Delete recent bot messages
-        try:
-            async for msg in channel.history(limit=20):
-                if msg.author == self.bot.user:
-                    await msg.delete()
-        except Exception as exc:
-            log.warning("Schedule refresh: could not clear channel: %s", exc)
             return
 
         # Fetch upcoming schedule entries
@@ -615,8 +624,31 @@ class MaintenanceCog(commands.Cog, name="Maintenance"):
             )
             all_embeds.append(schedule_embed)
 
+        fingerprint = fingerprint_embeds(all_embeds)
+
+        try:
+            bot_messages = [
+                m async for m in channel.history(limit=20) if m.author == self.bot.user
+            ]
+        except Exception as exc:
+            log.warning("Schedule refresh: could not read channel history: %s", exc)
+            await self._run_refresh_stash_channel()
+            return
+
+        if bot_messages and load_fingerprint("schedule") == fingerprint:
+            log.info("Schedule refresh: no changes since last post — skipping.")
+            await self._run_refresh_stash_channel()
+            return
+
+        for msg in bot_messages:
+            try:
+                await msg.delete()
+            except Exception as exc:
+                log.warning("Schedule refresh: could not delete old message %d: %s", msg.id, exc)
+
         try:
             await channel.send(embeds=all_embeds)
+            save_fingerprint("schedule", fingerprint)
             log.info("Schedule refresh: posted %d embed(s) to #schedule.", len(all_embeds))
         except Exception as exc:
             log.error("Schedule refresh: failed to post: %s", exc)

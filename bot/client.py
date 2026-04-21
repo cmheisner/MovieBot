@@ -106,12 +106,6 @@ class MovieBotClient(commands.Bot):
         self.pending_restart: bool = False
         self._startup_notified: bool = False
 
-    def get_active_channel_id(self, intended_channel_id: int) -> int:
-        """In dev mode, redirect all channel sends to the bot-testing channel."""
-        if self.config.dev_mode and self.config.bot_testing_channel_id:
-            return self.config.bot_testing_channel_id
-        return intended_channel_id
-
     async def setup_hook(self) -> None:
         await self.storage.initialize()
         backend = self.config.storage_backend

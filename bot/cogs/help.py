@@ -87,7 +87,7 @@ class HelpCog(commands.Cog, name="Help"):
                 "`/restart` — [Admin] Gracefully restart the bot\n"
                 "`/update` — [Admin] Pull latest code from git and restart\n"
                 "`/dev [state]` — [Admin] Toggle dev mode (runtime only)\n"
-                "`/logs [lines] [filter]` — [Admin] Show recent log output"
+                "`/logs` — [Admin] Attach the bot log file"
             ),
             inline=False,
         )

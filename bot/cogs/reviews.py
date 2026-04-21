@@ -127,16 +127,7 @@ class ReviewsCog(commands.Cog, name="Reviews"):
             field_value = (f"{r['text']}\n— {author_line}" if r["text"] else f"— {author_line}")
             embed.add_field(name=rating_str[:256], value=field_value[:1024], inline=False)
 
-        target_ch = self.bot.get_channel(
-            self.bot.get_active_channel_id(self.bot.config.general_channel_id)
-        )
-        if target_ch and target_ch.id != interaction.channel_id:
-            await target_ch.send(embed=embed)
-            await interaction.followup.send(
-                f"✅ Posted **{len(reviews_data)}** review(s) for **{display}** in {target_ch.mention}."
-            )
-        else:
-            await interaction.followup.send(embed=embed)
+        await interaction.followup.send(embed=embed)
 
     async def _resolve(
         self, interaction: discord.Interaction, movie_ref: Optional[str]
