@@ -1,4 +1,5 @@
 from __future__ import annotations
+import asyncio
 import logging
 
 import discord
@@ -10,6 +11,8 @@ from bot.providers.media.omdb import OMDBMetadataProvider, NoOpMetadataProvider
 from bot.providers.media.plex import PlexClient, NoOpPlexClient
 from bot.providers.storage.sqlite import SQLiteStorageProvider
 from bot.utils.permissions import user_has_staff_role
+from bot.utils.restart_notify import count_errors_since, load_and_clear_marker
+from bot.utils.runtime import git_short_sha
 
 log = logging.getLogger(__name__)
 
@@ -101,6 +104,7 @@ class MovieBotClient(commands.Bot):
             else NoOpPlexClient()
         )
         self.pending_restart: bool = False
+        self._startup_notified: bool = False
 
     def get_active_channel_id(self, intended_channel_id: int) -> int:
         """In dev mode, redirect all channel sends to the bot-testing channel."""
@@ -139,6 +143,58 @@ class MovieBotClient(commands.Bot):
                 name="Movie Nights 🎬",
             )
         )
+        await self._notify_restart_complete()
+
+    async def _notify_restart_complete(self) -> None:
+        # on_ready fires on every reconnect; only consume the marker on the
+        # first ready of this process.
+        if self._startup_notified:
+            return
+        self._startup_notified = True
+
+        marker = await asyncio.to_thread(load_and_clear_marker)
+        if not marker:
+            return
+
+        channel_id = int(marker["channel_id"])
+        started_at = float(marker["started_at"])
+        kind = marker.get("kind", "restart")
+        user_id = marker.get("user_id")
+
+        errors = await asyncio.to_thread(count_errors_since, started_at)
+        sha = await asyncio.to_thread(git_short_sha)
+        verb = "updated and restarted" if kind == "update" else "restarted"
+        mention = f"<@{int(user_id)}> " if user_id else ""
+        if errors:
+            plural = "s" if errors != 1 else ""
+            msg = (
+                f"{mention}⚠️ MovieBot {verb} — back online with "
+                f"**{errors} error{plural}** during startup. "
+                f"Run `/logs level:error` to view. (HEAD: {sha})"
+            )
+        else:
+            msg = f"{mention}✅ MovieBot {verb} — back online. (HEAD: {sha})"
+
+        channel = self.get_channel(channel_id)
+        if channel is None:
+            try:
+                channel = await self.fetch_channel(channel_id)
+            except discord.DiscordException:
+                log.warning(
+                    "Could not fetch channel %d for restart notification.",
+                    channel_id, exc_info=True,
+                )
+                return
+        try:
+            await channel.send(
+                msg,
+                allowed_mentions=discord.AllowedMentions(users=True),
+            )
+        except discord.DiscordException:
+            log.warning(
+                "Failed to send restart notification to channel %d.",
+                channel_id, exc_info=True,
+            )
 
     async def close(self) -> None:
         await self.storage.close()

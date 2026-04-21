@@ -13,6 +13,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from bot.constants import LOG_FILE_PATH
+from bot.utils.restart_notify import save_marker
 from bot.utils.runtime import git_short_sha
 from bot.utils.sanity import run_sanity_check
 
@@ -122,6 +123,10 @@ class AdminCog(commands.Cog, name="Admin"):
         await interaction.response.send_message(
             "Restarting... I'll be back in a few seconds. 🔄", ephemeral=True
         )
+        if interaction.channel_id is not None:
+            await asyncio.to_thread(
+                save_marker, interaction.channel_id, interaction.user.id, "restart"
+            )
         self.bot.pending_restart = True
         await asyncio.sleep(1)
         await self.bot.close()
@@ -178,6 +183,10 @@ class AdminCog(commands.Cog, name="Admin"):
             log.info("git pull succeeded — HEAD unchanged at %s", sha_before)
         else:
             log.info("git pull succeeded — HEAD: %s → %s", sha_before, sha_after)
+        if interaction.channel_id is not None:
+            await asyncio.to_thread(
+                save_marker, interaction.channel_id, interaction.user.id, "update"
+            )
         self.bot.pending_restart = True
         await asyncio.sleep(1)
         await self.bot.close()
