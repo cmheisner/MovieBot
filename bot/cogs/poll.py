@@ -11,19 +11,11 @@ from bot.constants import NUMBER_EMOJI, MAX_POLL_OPTIONS, TZ_EASTERN, MOVIE_NIGH
 from bot.models.movie import Movie, MovieStatus
 from bot.models.poll import Poll, PollEntry
 from bot.utils.embeds import poll_embed
+from bot.utils.permissions import user_has_staff_role
 from bot.utils.time_utils import format_dt_eastern
 from bot.cogs.seasons import SEASON_CHOICES
 
 log = logging.getLogger(__name__)
-
-
-def _user_has_staff_role(user: discord.abc.User, staff_role_id: int) -> bool:
-    """Accept either the numeric role ID or a role literally named 'Staff' (fallback)."""
-    roles = getattr(user, "roles", []) or []
-    return any(
-        (staff_role_id and r.id == staff_role_id) or r.name.lower() == "staff"
-        for r in roles
-    )
 
 
 class PollCog(commands.Cog, name="Poll"):
@@ -73,7 +65,7 @@ class PollCog(commands.Cog, name="Poll"):
         await interaction.response.defer()
 
         # Staff gate
-        if not _user_has_staff_role(interaction.user, self.bot.config.staff_role_id):
+        if not user_has_staff_role(interaction.user, self.bot.config.staff_role_id):
             await interaction.followup.send(
                 "⛔ Only members with the **Staff** role can create polls.", ephemeral=True
             )
@@ -192,9 +184,14 @@ class PollCog(commands.Cog, name="Poll"):
 
     # ── /poll list ────────────────────────────────────────────────────────
 
-    @poll.command(name="list", description="Show current vote tallies for the open poll.")
+    @poll.command(name="list", description="[Staff] Show current vote tallies for the open poll.")
     async def poll_list(self, interaction: discord.Interaction):
         await interaction.response.defer()
+        if not user_has_staff_role(interaction.user, self.bot.config.staff_role_id):
+            await interaction.followup.send(
+                "⛔ Only members with the **Staff** role can use poll commands.", ephemeral=True
+            )
+            return
         poll = await self.bot.storage.get_latest_open_poll()
         if not poll:
             await interaction.followup.send("⚠️ No open poll found.", ephemeral=True)
@@ -230,10 +227,15 @@ class PollCog(commands.Cog, name="Poll"):
 
     @poll.command(
         name="close",
-        description="Close the open poll and post a ranked list of results (for copy-paste into /schedule add).",
+        description="[Staff] Close the open poll and post a ranked list of results.",
     )
     async def poll_close(self, interaction: discord.Interaction):
         await interaction.response.defer()
+        if not user_has_staff_role(interaction.user, self.bot.config.staff_role_id):
+            await interaction.followup.send(
+                "⛔ Only members with the **Staff** role can use poll commands.", ephemeral=True
+            )
+            return
         poll = await self.bot.storage.get_latest_open_poll()
         if not poll:
             await interaction.followup.send("⚠️ No open poll found.", ephemeral=True)

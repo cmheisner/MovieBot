@@ -9,6 +9,7 @@ from bot.config import BotConfig
 from bot.providers.media.omdb import OMDBMetadataProvider, NoOpMetadataProvider
 from bot.providers.media.plex import PlexClient, NoOpPlexClient
 from bot.providers.storage.sqlite import SQLiteStorageProvider
+from bot.utils.permissions import user_has_staff_role
 
 log = logging.getLogger(__name__)
 
@@ -27,21 +28,46 @@ COGS = [
 
 
 class DevModeTree(app_commands.CommandTree):
-    """CommandTree subclass that gates all slash commands to bot-testing in dev mode."""
+    """Gates slash commands by channel.
+
+    - Dev mode on: only #bot-testing, everyone.
+    - Dev mode off: Staff may run commands anywhere; everyone else is limited to
+      the public allowlist (general/bathroom/suggestions/concessions).
+    """
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         config = interaction.client.config
-        if (
-            config.dev_mode
-            and config.bot_testing_channel_id
-            and interaction.channel_id != config.bot_testing_channel_id
-        ):
-            await interaction.response.send_message(
-                f"🔧 Dev mode: commands only allowed in <#{config.bot_testing_channel_id}>.",
-                ephemeral=True,
+
+        if config.dev_mode and config.bot_testing_channel_id:
+            if interaction.channel_id != config.bot_testing_channel_id:
+                await interaction.response.send_message(
+                    f"🔧 Dev mode: commands only allowed in <#{config.bot_testing_channel_id}>.",
+                    ephemeral=True,
+                )
+                return False
+            return True
+
+        if user_has_staff_role(interaction.user, config.staff_role_id):
+            return True
+
+        allowed = [
+            cid for cid in (
+                config.general_channel_id,
+                config.bathroom_channel_id,
+                config.suggestions_channel_id,
+                config.concessions_channel_id,
             )
-            return False
-        return True
+            if cid
+        ]
+        if interaction.channel_id in allowed:
+            return True
+
+        mentions = " ".join(f"<#{cid}>" for cid in allowed) or "(no channels configured)"
+        await interaction.response.send_message(
+            f"This command can only be used in {mentions}.",
+            ephemeral=True,
+        )
+        return False
 
 
 class MovieBotClient(commands.Bot):
