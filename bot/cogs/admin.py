@@ -4,16 +4,19 @@ import asyncio
 import io
 import logging
 import os
+from datetime import date, timedelta
 from typing import Optional
 
 import discord
 from discord import app_commands
 from discord.ext import commands
+from gspread.exceptions import APIError
 
 from bot.constants import LOG_FILE_PATH
 from bot.utils.restart_notify import save_marker
 from bot.utils.runtime import git_short_sha
 from bot.utils.sanity import run_sanity_check
+from bot.utils.time_utils import week_monday
 
 log = logging.getLogger(__name__)
 
@@ -225,6 +228,59 @@ class AdminCog(commands.Cog, name="Admin"):
             ephemeral=True,
         )
 
+    # ── /defrag ───────────────────────────────────────────────────────────
+
+    @app_commands.command(
+        name="defrag",
+        description="[Admin] Pull future movies back one week to fill any gap weeks (Wed+Thu both empty).",
+    )
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def defrag(self, interaction: discord.Interaction) -> None:
+        log.info("Defrag requested by %s (id=%d).", interaction.user, interaction.user.id)
+        await interaction.response.defer()
+        entries = await self.bot.storage.list_schedule_entries(upcoming_only=False, limit=500)
+        entries_asc = sorted(entries, key=lambda e: e.scheduled_for)
+        if not entries_asc:
+            await interaction.followup.send("ℹ️ Nothing scheduled — no gaps to fix.", ephemeral=True)
+            return
+
+        total_shifts = 0
+        filled_weeks: list[date] = []
+        MAX_PASSES = 60  # safety bound
+
+        for _ in range(MAX_PASSES):
+            gap_week = _find_first_gap(entries_asc)
+            if gap_week is None:
+                break
+            filled_weeks.append(gap_week)
+            for e in entries_asc:
+                if week_monday(e.scheduled_for) > gap_week:
+                    new_dt = e.scheduled_for - timedelta(days=7)
+                    if e.discord_event_id and interaction.guild:
+                        try:
+                            ev = await interaction.guild.fetch_scheduled_event(int(e.discord_event_id))
+                            await ev.delete()
+                        except Exception as exc:
+                            log.warning("defrag: could not delete event %s: %s", e.discord_event_id, exc)
+                        await self.bot.storage.update_schedule_entry(
+                            e.id, discord_event_id=None, scheduled_for=new_dt
+                        )
+                    else:
+                        await self.bot.storage.update_schedule_entry(e.id, scheduled_for=new_dt)
+                    e.scheduled_for = new_dt
+                    total_shifts += 1
+            entries_asc.sort(key=lambda x: x.scheduled_for)
+
+        if not filled_weeks:
+            await interaction.followup.send("✅ Schedule is already contiguous — no gaps found.")
+            return
+
+        lines = [f"🔧 Filled **{len(filled_weeks)}** gap week(s); shifted **{total_shifts}** entry move(s) earlier."]
+        for wk in filled_weeks:
+            lines.append(f"• Week of {wk.strftime('%b %d, %Y')}")
+        lines.append("\n-# Discord events will be recreated automatically within 24 h.")
+        await interaction.followup.send("\n".join(lines))
+
     # ── Error handler ─────────────────────────────────────────────────────
 
     async def cog_app_command_error(
@@ -232,12 +288,41 @@ class AdminCog(commands.Cog, name="Admin"):
     ) -> None:
         if isinstance(error, app_commands.MissingPermissions):
             msg = "⛔ You need the **Manage Server** permission to use this command."
+        else:
+            cause = getattr(error, "original", error)
+            if isinstance(cause, APIError):
+                status = getattr(getattr(cause, "response", None), "status_code", None)
+                if status == 429:
+                    msg = "⏳ Google Sheets is rate-limiting us. Wait ~1 minute and try again."
+                elif status == 503:
+                    msg = "⚠️ Google Sheets is temporarily unavailable. Try again in a moment."
+                else:
+                    msg = f"⚠️ Google Sheets error ({status}). Check `/logs` for details."
+            else:
+                msg = "⚠️ Command failed unexpectedly. Check `/logs` for details."
+            log.exception("Admin cog error: %s", error)
+        try:
             if interaction.response.is_done():
                 await interaction.followup.send(msg, ephemeral=True)
             else:
                 await interaction.response.send_message(msg, ephemeral=True)
-        else:
-            log.exception("Admin cog error: %s", error)
+        except discord.HTTPException:
+            pass
+
+
+def _find_first_gap(entries_asc: list) -> date | None:
+    """Return the Monday of the first week with no entries, between first and last scheduled week."""
+    if not entries_asc:
+        return None
+    weeks_with_entries = {week_monday(e.scheduled_for) for e in entries_asc}
+    first = min(weeks_with_entries)
+    last = max(weeks_with_entries)
+    cur = first + timedelta(days=7)
+    while cur <= last:
+        if cur not in weeks_with_entries:
+            return cur
+        cur += timedelta(days=7)
+    return None
 
 
 async def setup(bot: commands.Bot) -> None:

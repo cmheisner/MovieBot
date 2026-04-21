@@ -1,17 +1,23 @@
 from __future__ import annotations
 import asyncio
 import logging
-from datetime import date, datetime, timezone as dt_timezone, timedelta
+from datetime import datetime, timezone as dt_timezone
 
 import discord
 from discord import app_commands
 from discord.ext import commands
+from gspread.exceptions import APIError
 
 from bot.constants import TZ_EASTERN, MOVIE_NIGHT_HOUR, MOVIE_NIGHT_MINUTE
 from bot.models.movie import MovieStatus
 from bot.utils.embeds import schedule_embeds, build_calendar_embed
 from bot.utils.movie_lookup import autocomplete_movies, resolve_movie_by_id
-from bot.utils.time_utils import next_movie_night, next_movie_night_after, format_dt_eastern
+from bot.utils.time_utils import (
+    aware_utc,
+    format_dt_eastern,
+    next_movie_night,
+    next_movie_night_after,
+)
 
 log = logging.getLogger(__name__)
 
@@ -31,15 +37,6 @@ def _parse_date(raw: str) -> datetime | None:
 def _to_utc(naive_date: datetime) -> datetime:
     naive = naive_date.replace(hour=MOVIE_NIGHT_HOUR, minute=MOVIE_NIGHT_MINUTE, second=0, microsecond=0)
     return naive.replace(tzinfo=TZ_EASTERN).astimezone(dt_timezone.utc)
-
-
-def _aware_utc(dt: datetime) -> datetime:
-    return dt if dt.tzinfo else dt.replace(tzinfo=dt_timezone.utc)
-
-
-def _week_monday(dt: datetime) -> date:
-    east = _aware_utc(dt).astimezone(TZ_EASTERN).date()
-    return east - timedelta(days=east.weekday())
 
 
 async def _plex_check(plex, title: str) -> bool:
@@ -268,63 +265,11 @@ class ScheduleCog(commands.Cog, name="Schedule"):
     ) -> list[app_commands.Choice[str]]:
         return await self._open_date_choices(current)
 
-    # ── /schedule fix ─────────────────────────────────────────────────────
-
-    @schedule.command(
-        name="fix",
-        description="Pull future movies back one week to fill any gap weeks (Wed+Thu both empty).",
-    )
-    async def schedule_fix(self, interaction: discord.Interaction):
-        await interaction.response.defer()
-        entries = await self.bot.storage.list_schedule_entries(upcoming_only=False, limit=500)
-        entries_asc = sorted(entries, key=lambda e: e.scheduled_for)
-        if not entries_asc:
-            await interaction.followup.send("ℹ️ Nothing scheduled — no gaps to fix.", ephemeral=True)
-            return
-
-        total_shifts = 0
-        filled_weeks: list[date] = []
-        MAX_PASSES = 60  # safety bound
-
-        for _ in range(MAX_PASSES):
-            gap_week = self._find_first_gap(entries_asc)
-            if gap_week is None:
-                break
-            filled_weeks.append(gap_week)
-            # Shift every entry whose week starts AFTER the gap week back by 7 days.
-            for e in entries_asc:
-                if _week_monday(e.scheduled_for) > gap_week:
-                    new_dt = e.scheduled_for - timedelta(days=7)
-                    if e.discord_event_id and interaction.guild:
-                        try:
-                            ev = await interaction.guild.fetch_scheduled_event(int(e.discord_event_id))
-                            await ev.delete()
-                        except Exception as exc:
-                            log.warning("schedule_fix: could not delete event %s: %s", e.discord_event_id, exc)
-                        await self.bot.storage.update_schedule_entry(
-                            e.id, discord_event_id=None, scheduled_for=new_dt
-                        )
-                    else:
-                        await self.bot.storage.update_schedule_entry(e.id, scheduled_for=new_dt)
-                    e.scheduled_for = new_dt
-                    total_shifts += 1
-            entries_asc.sort(key=lambda x: x.scheduled_for)
-
-        if not filled_weeks:
-            await interaction.followup.send("✅ Schedule is already contiguous — no gaps found.")
-            return
-
-        lines = [f"🔧 Filled **{len(filled_weeks)}** gap week(s); shifted **{total_shifts}** entry move(s) earlier."]
-        for wk in filled_weeks:
-            lines.append(f"• Week of {wk.strftime('%b %d, %Y')}")
-        lines.append("\n-# Discord events will be recreated automatically within 24 h.")
-        await interaction.followup.send("\n".join(lines))
-
     async def _open_date_choices(self, current: str) -> list[app_commands.Choice[str]]:
         """Return up to 5 upcoming open movie night slots (Wed/Thu with no movie booked)."""
         all_entries = await self.bot.storage.list_schedule_entries(upcoming_only=False, limit=500)
         booked = {
-            _aware_utc(e.scheduled_for).astimezone(TZ_EASTERN).date()
+            aware_utc(e.scheduled_for).astimezone(TZ_EASTERN).date()
             for e in all_entries
         }
         choices = []
@@ -342,21 +287,6 @@ class ScheduleCog(commands.Cog, name="Schedule"):
                     break
             slot = next_movie_night_after(slot)
         return choices
-
-    @staticmethod
-    def _find_first_gap(entries_asc: list) -> date | None:
-        """Return the Monday of the first week with no entries, between first and last scheduled week."""
-        if not entries_asc:
-            return None
-        weeks_with_entries = {_week_monday(e.scheduled_for) for e in entries_asc}
-        first = min(weeks_with_entries)
-        last = max(weeks_with_entries)
-        cur = first + timedelta(days=7)
-        while cur <= last:
-            if cur not in weeks_with_entries:
-                return cur
-            cur += timedelta(days=7)
-        return None
 
     # ── /schedule calendar ────────────────────────────────────────────────
 
@@ -386,7 +316,7 @@ class ScheduleCog(commands.Cog, name="Schedule"):
         all_entries = await self.bot.storage.list_schedule_entries(upcoming_only=False, limit=500)
 
         def _to_eastern(dt: datetime) -> datetime:
-            return _aware_utc(dt).astimezone(TZ_EASTERN)
+            return aware_utc(dt).astimezone(TZ_EASTERN)
 
         month_entries = [
             e for e in all_entries
@@ -403,6 +333,31 @@ class ScheduleCog(commands.Cog, name="Schedule"):
         plex_availability = await _plex_map(self.bot.plex, list(movies_by_id.values()))
         embed = build_calendar_embed(year, month, month_entries, movies_by_id, plex_availability)
         await interaction.followup.send(embed=embed)
+
+    # ── Error handler ─────────────────────────────────────────────────────
+
+    async def cog_app_command_error(
+        self, interaction: discord.Interaction, error: app_commands.AppCommandError
+    ) -> None:
+        cause = getattr(error, "original", error)
+        if isinstance(cause, APIError):
+            status = getattr(getattr(cause, "response", None), "status_code", None)
+            if status == 429:
+                msg = "⏳ Google Sheets is rate-limiting us. Wait ~1 minute and try again."
+            elif status == 503:
+                msg = "⚠️ Google Sheets is temporarily unavailable. Try again in a moment."
+            else:
+                msg = f"⚠️ Google Sheets error ({status}). Check `/logs` for details."
+        else:
+            msg = "⚠️ Command failed unexpectedly. Check `/logs` for details."
+        log.exception("Schedule cog error: %s", error)
+        try:
+            if interaction.response.is_done():
+                await interaction.followup.send(msg, ephemeral=True)
+            else:
+                await interaction.response.send_message(msg, ephemeral=True)
+        except discord.HTTPException:
+            pass
 
 
 async def setup(bot):

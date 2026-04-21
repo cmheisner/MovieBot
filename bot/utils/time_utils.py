@@ -1,7 +1,16 @@
 from __future__ import annotations
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 from bot.constants import TZ_EASTERN, TZ_PACIFIC, MOVIE_NIGHT_WEEKDAYS, MOVIE_NIGHT_HOUR, MOVIE_NIGHT_MINUTE
+
+
+def aware_utc(dt: datetime) -> datetime:
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
+def week_monday(dt: datetime) -> date:
+    east = aware_utc(dt).astimezone(TZ_EASTERN).date()
+    return east - timedelta(days=east.weekday())
 
 
 def next_movie_night(after: datetime | None = None) -> datetime:

@@ -713,20 +713,32 @@ class GoogleSheetsStorageProvider(StorageProvider):
         if "scheduled_for" in update_fields and isinstance(update_fields["scheduled_for"], datetime):
             update_fields["scheduled_for"] = update_fields["scheduled_for"].isoformat()
 
-        def _do():
+        def _do() -> ScheduleEntry:
             ws = self._ws("schedule_entries")
-            row_idx = self._find_row_idx(ws, entry_id, "schedule_entries")
+            id_col = self._cols["schedule_entries"].get("id", 0)
+            all_rows = ws.get_all_values()
+            row_idx = None
+            current_row: list[str] = []
+            for i, r in enumerate(all_rows[1:], start=2):
+                if r and id_col < len(r) and r[id_col] == str(entry_id):
+                    row_idx = i
+                    current_row = list(r)
+                    break
             if row_idx is None:
                 raise ValueError(f"Schedule entry id={entry_id} not found.")
             for field_name, value in update_fields.items():
                 col = self._col_idx("schedule_entries", field_name)
                 if col is None:
                     continue
-                ws.update_cell(row_idx, col, _to_str(value))
+                str_val = _to_str(value)
+                ws.update_cell(row_idx, col, str_val)
+                while len(current_row) < col:
+                    current_row.append("")
+                current_row[col - 1] = str_val
             self._cache.drop("schedule_entries")
+            return self._row_to_schedule_entry(current_row)
 
-        await asyncio.to_thread(_do)
-        return await self.get_schedule_entry(entry_id)
+        return await asyncio.to_thread(_do)
 
     async def delete_schedule_entry(self, entry_id: int) -> None:
         def _do():
