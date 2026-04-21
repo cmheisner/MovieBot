@@ -65,6 +65,8 @@ db.sqlite3-journal
 data/*.db
 data/*.db-wal
 data/*.db-shm
+data/*.log
+data/*.log.*
 credentials.json
 
 # Flask stuff:

@@ -1,13 +1,43 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import logging
+import os
+from collections import deque
+from typing import Optional
 
 import discord
 from discord import app_commands
 from discord.ext import commands
 
+from bot.constants import LOG_FILE_PATH
+
 log = logging.getLogger(__name__)
+
+_LOGS_MAX_LINES = 500
+_LOGS_DEFAULT_LINES = 50
+_LOGS_INLINE_CHAR_LIMIT = 1900  # Leave headroom under Discord's 2000-char message cap.
+
+
+def _read_tail(path: str, lines: int, filter_substr: Optional[str]) -> list[str]:
+    """Return the last *lines* matching entries from the log file."""
+    if not os.path.exists(path):
+        raise FileNotFoundError(path)
+    needle = filter_substr.lower() if filter_substr else None
+    kept: deque[str] = deque(maxlen=lines)
+    with open(path, "r", encoding="utf-8", errors="replace") as f:
+        for line in f:
+            if needle and needle not in line.lower():
+                continue
+            kept.append(line.rstrip("\n"))
+    return list(kept)
+
+
+_DEV_STATE_CHOICES = [
+    app_commands.Choice(name="on", value="on"),
+    app_commands.Choice(name="off", value="off"),
+]
 
 
 class AdminCog(commands.Cog, name="Admin"):
@@ -15,11 +45,9 @@ class AdminCog(commands.Cog, name="Admin"):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
 
-    admin_group = app_commands.Group(name="bot", description="Bot administration commands.")
+    # ── /restart ──────────────────────────────────────────────────────────
 
-    # ── /bot restart ──────────────────────────────────────────────────────
-
-    @admin_group.command(name="restart", description="[Admin] Gracefully restart the bot.")
+    @app_commands.command(name="restart", description="[Admin] Gracefully restart the bot.")
     @app_commands.checks.has_permissions(manage_guild=True)
     async def restart(self, interaction: discord.Interaction) -> None:
         log.info("Restart requested by %s (id=%d).", interaction.user, interaction.user.id)
@@ -30,9 +58,9 @@ class AdminCog(commands.Cog, name="Admin"):
         await asyncio.sleep(1)
         await self.bot.close()
 
-    # ── /bot update ───────────────────────────────────────────────────────
+    # ── /update ───────────────────────────────────────────────────────────
 
-    @admin_group.command(name="update", description="[Admin] Pull latest code from git then restart.")
+    @app_commands.command(name="update", description="[Admin] Pull latest code from git then restart.")
     @app_commands.checks.has_permissions(manage_guild=True)
     async def update(self, interaction: discord.Interaction) -> None:
         log.info("Update requested by %s (id=%d).", interaction.user, interaction.user.id)
@@ -51,7 +79,7 @@ class AdminCog(commands.Cog, name="Admin"):
         except FileNotFoundError:
             await interaction.followup.send(
                 "⚠️ `git` is not available in this environment. "
-                "`/bot update` only works on bare-metal deployments — use `/bot restart` instead.",
+                "`/update` only works on bare-metal deployments — use `/restart` instead.",
                 ephemeral=True,
             )
             return
@@ -79,6 +107,111 @@ class AdminCog(commands.Cog, name="Admin"):
         self.bot.pending_restart = True
         await asyncio.sleep(1)
         await self.bot.close()
+
+    # ── /dev ──────────────────────────────────────────────────────────────
+
+    @app_commands.command(
+        name="dev",
+        description="[Admin] Toggle dev mode. Runtime-only — resets to .env on restart.",
+    )
+    @app_commands.describe(state="on to enable, off to disable, or leave blank to toggle.")
+    @app_commands.choices(state=_DEV_STATE_CHOICES)
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def dev(
+        self,
+        interaction: discord.Interaction,
+        state: Optional[app_commands.Choice[str]] = None,
+    ) -> None:
+        config = self.bot.config
+        if state is None:
+            new_value = not config.dev_mode
+        else:
+            new_value = state.value == "on"
+
+        config.dev_mode = new_value
+        log.info(
+            "Dev mode %s by %s (id=%d).",
+            "enabled" if new_value else "disabled",
+            interaction.user, interaction.user.id,
+        )
+
+        if new_value and not config.bot_testing_channel_id:
+            await interaction.response.send_message(
+                "🔧 Dev mode **on** — but `BOT_TESTING_CHANNEL_ID` is not configured, "
+                "so commands will not be gated.",
+                ephemeral=True,
+            )
+            return
+
+        if new_value:
+            msg = (
+                f"🔧 Dev mode **on** — commands now restricted to "
+                f"<#{config.bot_testing_channel_id}>. Reverts to `.env` on restart."
+            )
+        else:
+            msg = "✅ Dev mode **off** — normal channel allowlist in effect. Reverts to `.env` on restart."
+        await interaction.response.send_message(msg, ephemeral=True)
+
+    # ── /logs ─────────────────────────────────────────────────────────────
+
+    @app_commands.command(
+        name="logs",
+        description="[Admin] Show recent bot log output.",
+    )
+    @app_commands.describe(
+        lines=f"How many lines to return (default {_LOGS_DEFAULT_LINES}, max {_LOGS_MAX_LINES}).",
+        filter="Case-insensitive substring to filter lines by (optional).",
+    )
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def logs(
+        self,
+        interaction: discord.Interaction,
+        lines: int = _LOGS_DEFAULT_LINES,
+        filter: Optional[str] = None,
+    ) -> None:
+        await interaction.response.defer(ephemeral=True)
+
+        lines = max(1, min(_LOGS_MAX_LINES, lines))
+        path = LOG_FILE_PATH
+
+        try:
+            tail = await asyncio.to_thread(_read_tail, path, lines, filter)
+        except FileNotFoundError:
+            await interaction.followup.send(
+                f"⚠️ Log file not found at `{path}`. "
+                "The bot may not have written any logs yet, or the working "
+                "directory is not the project root.",
+                ephemeral=True,
+            )
+            return
+        except Exception as exc:
+            await interaction.followup.send(f"⚠️ Could not read logs: {exc}", ephemeral=True)
+            return
+
+        if not tail:
+            msg = "_No log lines matched._" if filter else "_Log file is empty._"
+            await interaction.followup.send(msg, ephemeral=True)
+            return
+
+        joined = "\n".join(tail)
+        header_parts = [f"Last {len(tail)} line(s)"]
+        if filter:
+            header_parts.append(f"filter={filter!r}")
+        header = " · ".join(header_parts)
+
+        if len(joined) <= _LOGS_INLINE_CHAR_LIMIT:
+            await interaction.followup.send(
+                f"**{header}**\n```\n{joined}\n```",
+                ephemeral=True,
+            )
+            return
+
+        buf = io.BytesIO(joined.encode("utf-8"))
+        await interaction.followup.send(
+            f"**{header}** — attached as file (output exceeded inline limit).",
+            file=discord.File(buf, filename="moviebot.log"),
+            ephemeral=True,
+        )
 
     # ── Error handler ─────────────────────────────────────────────────────
 

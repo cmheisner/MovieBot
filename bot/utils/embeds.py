@@ -267,8 +267,6 @@ def schedule_embed(
         title = movie.display_title if movie else f"Movie #{e.movie_id}"
         date_str = format_dt_eastern(e.scheduled_for)
         line = f"**{title}** — {date_str}"
-        if e.discord_event_id:
-            line += " ✅"
         if plex_availability and e.movie_id in plex_availability:
             line += " 📀 On Plex" if plex_availability[e.movie_id] else ""
         lines.append(line)

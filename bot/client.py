@@ -116,6 +116,8 @@ class MovieBotClient(commands.Bot):
         else:
             log.info("Storage initialized: SQLite at %s", self.config.db_path)
 
+        await self.plex.ping()
+
         for cog in COGS:
             await self.load_extension(cog)
             log.info("Loaded cog: %s", cog)

@@ -84,8 +84,10 @@ class HelpCog(commands.Cog, name="Help"):
         embed.add_field(
             name="🔧 Admin",
             value=(
-                "`/bot restart` — [Admin] Gracefully restart the bot\n"
-                "`/bot update` — [Admin] Pull latest code from git and restart"
+                "`/restart` — [Admin] Gracefully restart the bot\n"
+                "`/update` — [Admin] Pull latest code from git and restart\n"
+                "`/dev [state]` — [Admin] Toggle dev mode (runtime only)\n"
+                "`/logs [lines] [filter]` — [Admin] Show recent log output"
             ),
             inline=False,
         )
