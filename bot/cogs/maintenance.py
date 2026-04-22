@@ -76,6 +76,10 @@ class MaintenanceCog(commands.Cog, name="Maintenance"):
         await self.bot.wait_until_ready()
         await asyncio.sleep(30)
 
+    @startup_event_pass.error
+    async def startup_event_pass_error(self, exc: Exception) -> None:
+        log.exception("startup_event_pass crashed: %s", exc)
+
     # One-shot delayed startup pass for #schedule channel (60s after on_ready)
     @tasks.loop(seconds=60, count=1)
     async def startup_schedule_pass(self) -> None:
@@ -85,6 +89,10 @@ class MaintenanceCog(commands.Cog, name="Maintenance"):
     async def before_startup_schedule(self) -> None:
         await self.bot.wait_until_ready()
         await asyncio.sleep(60)
+
+    @startup_schedule_pass.error
+    async def startup_schedule_pass_error(self, exc: Exception) -> None:
+        log.exception("startup_schedule_pass crashed: %s", exc)
 
     # ── Startup integrity check ──────────────────────────────────────────
 
@@ -175,6 +183,11 @@ class MaintenanceCog(commands.Cog, name="Maintenance"):
     async def before_scan(self) -> None:
         await self.bot.wait_until_ready()
 
+    @daily_duplicate_scan.error
+    async def daily_duplicate_scan_error(self, exc: Exception) -> None:
+        log.exception("daily_duplicate_scan crashed; restarting: %s", exc)
+        self.daily_duplicate_scan.restart()
+
     # ── Auto-mark watched ────────────────────────────────────────────────
 
     @tasks.loop(time=_WATCHED_CHECK_TIME)
@@ -184,6 +197,11 @@ class MaintenanceCog(commands.Cog, name="Maintenance"):
     @auto_mark_watched.before_loop
     async def before_auto_mark_watched(self) -> None:
         await self.bot.wait_until_ready()
+
+    @auto_mark_watched.error
+    async def auto_mark_watched_error(self, exc: Exception) -> None:
+        log.exception("auto_mark_watched crashed; restarting: %s", exc)
+        self.auto_mark_watched.restart()
 
     async def _run_auto_mark_watched(self) -> None:
         """Mark any scheduled movies whose date has passed as watched and clean up their Discord events."""
@@ -268,6 +286,11 @@ class MaintenanceCog(commands.Cog, name="Maintenance"):
     async def before_reminder(self) -> None:
         await self.bot.wait_until_ready()
 
+    @movie_night_reminder.error
+    async def movie_night_reminder_error(self, exc: Exception) -> None:
+        log.exception("movie_night_reminder crashed; restarting: %s", exc)
+        self.movie_night_reminder.restart()
+
     # ── Auto event creation ──────────────────────────────────────────────
 
     @tasks.loop(time=_EVENT_CHECK_TIME)
@@ -277,6 +300,11 @@ class MaintenanceCog(commands.Cog, name="Maintenance"):
     @auto_create_events.before_loop
     async def before_auto_create(self) -> None:
         await self.bot.wait_until_ready()
+
+    @auto_create_events.error
+    async def auto_create_events_error(self, exc: Exception) -> None:
+        log.exception("auto_create_events crashed; restarting: %s", exc)
+        self.auto_create_events.restart()
 
     async def _run_auto_create_events(self) -> None:
         guild = self.bot.get_guild(self.bot.config.guild_id)
@@ -523,6 +551,11 @@ class MaintenanceCog(commands.Cog, name="Maintenance"):
     @refresh_schedule_channel.before_loop
     async def before_refresh_schedule(self) -> None:
         await self.bot.wait_until_ready()
+
+    @refresh_schedule_channel.error
+    async def refresh_schedule_channel_error(self, exc: Exception) -> None:
+        log.exception("refresh_schedule_channel crashed; restarting: %s", exc)
+        self.refresh_schedule_channel.restart()
 
     async def _run_refresh_schedule_channel(self) -> None:
         channel = self.bot.get_channel(self.bot.config.schedule_channel_id)

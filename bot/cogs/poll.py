@@ -18,6 +18,31 @@ from bot.cogs.seasons import SEASON_CHOICES
 log = logging.getLogger(__name__)
 
 
+_NO_DATE_SENTINEL = datetime.max.replace(tzinfo=timezone.utc)
+
+
+def _rank_entries(
+    entries: list[PollEntry],
+    vote_counts: dict[int, int],
+    movies_by_id: dict[int, Movie],
+) -> list[tuple[PollEntry, int]]:
+    """Rank poll entries by votes descending, tiebreaking by earliest added_at.
+
+    Movies missing from movies_by_id or with added_at=None sort last in the tiebreak,
+    matching the previous best-effort semantics without raising TypeError/KeyError.
+    """
+    def sort_key(entry: PollEntry) -> tuple[int, datetime]:
+        votes = vote_counts.get(entry.movie_id, 0)
+        movie = movies_by_id.get(entry.movie_id)
+        added = movie.added_at if (movie is not None and movie.added_at is not None) else _NO_DATE_SENTINEL
+        return (-votes, added)
+
+    return sorted(
+        ((entry, vote_counts.get(entry.movie_id, 0)) for entry in entries),
+        key=lambda t: sort_key(t[0]),
+    )
+
+
 class PollCog(commands.Cog, name="Poll"):
     def __init__(self, bot):
         self.bot = bot
@@ -38,6 +63,11 @@ class PollCog(commands.Cog, name="Poll"):
     @auto_close_loop.before_loop
     async def before_auto_close(self):
         await self.bot.wait_until_ready()
+
+    @auto_close_loop.error
+    async def auto_close_loop_error(self, exc: Exception) -> None:
+        log.exception("auto_close_loop crashed; restarting: %s", exc)
+        self.auto_close_loop.restart()
 
     poll = app_commands.Group(name="poll", description="Create and manage movie polls.")
 
@@ -275,11 +305,7 @@ class PollCog(commands.Cog, name="Poll"):
 
         vote_counts, movies_by_id = await self._fetch_votes(poll)
 
-        # Rank movies by votes descending; tie-break by earliest added.
-        ranked: list[tuple[PollEntry, int]] = sorted(
-            ((entry, vote_counts.get(entry.movie_id, 0)) for entry in poll.entries),
-            key=lambda t: (-t[1], movies_by_id[t[0].movie_id].added_at if movies_by_id.get(t[0].movie_id) else datetime.max.replace(tzinfo=timezone.utc)),
-        )
+        ranked = _rank_entries(poll.entries, vote_counts, movies_by_id)
 
         # Return every nominated movie to stash; the Staff will use /schedule add manually.
         for entry in poll.entries:
