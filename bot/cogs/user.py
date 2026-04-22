@@ -1,9 +1,13 @@
 from __future__ import annotations
+import logging
 import zoneinfo
 
 import discord
 from discord import app_commands
 from discord.ext import commands
+from gspread.exceptions import APIError
+
+log = logging.getLogger(__name__)
 
 # Curated list of common timezones shown in autocomplete
 COMMON_TIMEZONES = [
@@ -67,6 +71,31 @@ class UserCog(commands.Cog, name="User"):
             if current_lower in label.lower() or current_lower in tz.lower():
                 choices.append(app_commands.Choice(name=f"{label} — {tz}", value=tz))
         return choices[:25]
+
+    # ── Error handler ─────────────────────────────────────────────────────
+
+    async def cog_app_command_error(
+        self, interaction: discord.Interaction, error: app_commands.AppCommandError
+    ) -> None:
+        cause = getattr(error, "original", error)
+        if isinstance(cause, APIError):
+            status = getattr(getattr(cause, "response", None), "status_code", None)
+            if status == 429:
+                msg = "⏳ Google Sheets is rate-limiting us. Wait ~1 minute and try again."
+            elif status == 503:
+                msg = "⚠️ Google Sheets is temporarily unavailable. Try again in a moment."
+            else:
+                msg = f"⚠️ Google Sheets error ({status}). Check `/logs` for details."
+        else:
+            msg = "⚠️ Command failed unexpectedly. Check `/logs` for details."
+        log.exception("User cog error: %s", error)
+        try:
+            if interaction.response.is_done():
+                await interaction.followup.send(msg, ephemeral=True)
+            else:
+                await interaction.response.send_message(msg, ephemeral=True)
+        except discord.HTTPException:
+            pass
 
 
 async def setup(bot):

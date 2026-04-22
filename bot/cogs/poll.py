@@ -6,6 +6,7 @@ from typing import Optional
 import discord
 from discord import app_commands
 from discord.ext import commands, tasks
+from gspread.exceptions import APIError
 
 from bot.constants import NUMBER_EMOJI, MAX_POLL_OPTIONS, TZ_EASTERN, MOVIE_NIGHT_HOUR, MOVIE_NIGHT_MINUTE
 from bot.models.movie import Movie, MovieStatus
@@ -329,6 +330,31 @@ class PollCog(commands.Cog, name="Poll"):
             except Exception as exc:
                 log.warning("Poll close: could not post results to channel: %s", exc)
         return result_msg
+
+    # ── Error handler ─────────────────────────────────────────────────────
+
+    async def cog_app_command_error(
+        self, interaction: discord.Interaction, error: app_commands.AppCommandError
+    ) -> None:
+        cause = getattr(error, "original", error)
+        if isinstance(cause, APIError):
+            status = getattr(getattr(cause, "response", None), "status_code", None)
+            if status == 429:
+                msg = "⏳ Google Sheets is rate-limiting us. Wait ~1 minute and try again."
+            elif status == 503:
+                msg = "⚠️ Google Sheets is temporarily unavailable. Try again in a moment."
+            else:
+                msg = f"⚠️ Google Sheets error ({status}). Check `/logs` for details."
+        else:
+            msg = "⚠️ Command failed unexpectedly. Check `/logs` for details."
+        log.exception("Poll cog error: %s", error)
+        try:
+            if interaction.response.is_done():
+                await interaction.followup.send(msg, ephemeral=True)
+            else:
+                await interaction.response.send_message(msg, ephemeral=True)
+        except discord.HTTPException:
+            pass
 
 
 async def setup(bot):

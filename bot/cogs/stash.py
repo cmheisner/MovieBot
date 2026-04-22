@@ -5,6 +5,7 @@ from typing import Optional
 import discord
 from discord import app_commands
 from discord.ext import commands
+from gspread.exceptions import APIError
 
 from bot.models.movie import MovieStatus
 from bot.utils.embeds import movie_card, stash_list_embeds
@@ -209,6 +210,31 @@ class StashCog(commands.Cog, name="Stash"):
         self, interaction: discord.Interaction, current: str
     ) -> list[app_commands.Choice[str]]:
         return await autocomplete_movies(interaction, current, [MovieStatus.STASH])
+
+    # ── Error handler ─────────────────────────────────────────────────────
+
+    async def cog_app_command_error(
+        self, interaction: discord.Interaction, error: app_commands.AppCommandError
+    ) -> None:
+        cause = getattr(error, "original", error)
+        if isinstance(cause, APIError):
+            status = getattr(getattr(cause, "response", None), "status_code", None)
+            if status == 429:
+                msg = "⏳ Google Sheets is rate-limiting us. Wait ~1 minute and try again."
+            elif status == 503:
+                msg = "⚠️ Google Sheets is temporarily unavailable. Try again in a moment."
+            else:
+                msg = f"⚠️ Google Sheets error ({status}). Check `/logs` for details."
+        else:
+            msg = "⚠️ Command failed unexpectedly. Check `/logs` for details."
+        log.exception("Stash cog error: %s", error)
+        try:
+            if interaction.response.is_done():
+                await interaction.followup.send(msg, ephemeral=True)
+            else:
+                await interaction.response.send_message(msg, ephemeral=True)
+        except discord.HTTPException:
+            pass
 
 
 async def setup(bot):
