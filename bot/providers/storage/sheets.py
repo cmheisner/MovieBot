@@ -45,6 +45,37 @@ _CACHE_TTL = 60  # seconds — direct Sheets edits are visible within this windo
 _INIT_RETRY_STATUSES = frozenset({429, 500, 502, 503, 504})
 _INIT_RETRY_DELAYS = (5.0, 15.0, 45.0)
 
+# Retry policy for runtime (user-command) gspread calls. Shorter delays than
+# init so a retry still fits comfortably inside Discord's deferred-interaction
+# budget. Worst-case wall time: ~13s (1 + 3 + 9).
+_RUNTIME_RETRY_STATUSES = frozenset({429, 500, 502, 503, 504})
+_RUNTIME_RETRY_DELAYS = (1.0, 3.0, 9.0)
+
+
+def _retry_call(fn, *args, **kwargs):
+    """Invoke a gspread call with retry on transient errors (429/5xx).
+
+    Sync helper; meant to run inside asyncio.to_thread contexts where gspread's
+    blocking API is called. Retry is safe for every call site in this file:
+    each gspread method is a single atomic API call, and a failure response
+    means no mutation applied — so retry cannot duplicate a write.
+    """
+    attempts = (0.0, *_RUNTIME_RETRY_DELAYS)
+    for i, delay in enumerate(attempts):
+        if delay:
+            time.sleep(delay)
+        try:
+            return fn(*args, **kwargs)
+        except APIError as exc:
+            status = getattr(getattr(exc, "response", None), "status_code", None)
+            is_last = i == len(attempts) - 1
+            if status not in _RUNTIME_RETRY_STATUSES or is_last:
+                raise
+            log.warning(
+                "Sheets call got HTTP %s; retrying in %.1fs (attempt %d/%d)",
+                status, attempts[i + 1], i + 1, len(attempts) - 1,
+            )
+
 
 class _SheetCache:
     """Simple TTL cache for sheet data rows, keyed by sheet name."""
@@ -187,7 +218,7 @@ class GoogleSheetsStorageProvider(StorageProvider):
         cached = self._cache.get(name)
         if cached is not None:
             return cached
-        rows = self._ws(name).get_all_values()[1:]
+        rows = _retry_call(self._ws(name).get_all_values)[1:]
         self._cache.put(name, rows)
         return rows
 
@@ -221,7 +252,7 @@ class GoogleSheetsStorageProvider(StorageProvider):
     def _find_row_idx(self, ws: gspread.Worksheet, id_val: int, sheet: str) -> Optional[int]:
         """Return 1-based sheet row index for the row with id == id_val, or None."""
         id_col = self._cols.get(sheet, {}).get("id", 0)
-        all_rows = ws.get_all_values()
+        all_rows = _retry_call(ws.get_all_values)
         for i, r in enumerate(all_rows[1:], start=2):
             if r and id_col < len(r) and r[id_col] == str(id_val):
                 return i
@@ -321,7 +352,7 @@ class GoogleSheetsStorageProvider(StorageProvider):
     ) -> Movie:
         def _do() -> int:
             ws = self._ws("movies")
-            rows = ws.get_all_values()[1:]
+            rows = _retry_call(ws.get_all_values)[1:]
             title_col = self._cols["movies"].get("title")
             year_col = self._cols["movies"].get("year")
             if title_col is not None and year_col is not None:
@@ -356,7 +387,7 @@ class GoogleSheetsStorageProvider(StorageProvider):
                 values[name] = tag_vals.get(name, False)
             row = self._pack_row("movies", values)
             # Use USER_ENTERED so "TRUE"/"FALSE" become proper checkbox states.
-            ws.append_row(row, value_input_option="USER_ENTERED")
+            _retry_call(ws.append_row, row, value_input_option="USER_ENTERED")
             self._cache.drop("movies")
             return new_id
 
@@ -459,7 +490,7 @@ class GoogleSheetsStorageProvider(StorageProvider):
                 col = self._col_idx("movies", field_name)
                 if col is None:
                     continue  # column not present in sheet — silently skip
-                ws.update_cell(row_idx, col, _to_str(value))
+                _retry_call(ws.update_cell, row_idx, col, _to_str(value))
             self._cache.drop("movies")
 
         await asyncio.to_thread(_do)
@@ -470,7 +501,7 @@ class GoogleSheetsStorageProvider(StorageProvider):
             ws = self._ws("movies")
             row_idx = self._find_row_idx(ws, movie_id, "movies")
             if row_idx is not None:
-                ws.delete_rows(row_idx)
+                _retry_call(ws.delete_rows, row_idx)
                 self._cache.drop("movies")
 
         await asyncio.to_thread(_do)
@@ -489,8 +520,8 @@ class GoogleSheetsStorageProvider(StorageProvider):
         def _do() -> int:
             ws_polls = self._ws("polls")
             ws_entries = self._ws("poll_entries")
-            poll_rows = ws_polls.get_all_values()[1:]
-            entry_rows = ws_entries.get_all_values()[1:]
+            poll_rows = _retry_call(ws_polls.get_all_values)[1:]
+            entry_rows = _retry_call(ws_entries.get_all_values)[1:]
             poll_id = self._next_id("polls", poll_rows)
             entry_id = self._next_id("poll_entries", entry_rows)
             now = _now_iso()
@@ -504,7 +535,7 @@ class GoogleSheetsStorageProvider(StorageProvider):
                 "status": "open",
                 "target_date": target_date,
             }
-            ws_polls.append_row(self._pack_row("polls", poll_values), value_input_option="RAW")
+            _retry_call(ws_polls.append_row, self._pack_row("polls", poll_values), value_input_option="RAW")
             for pos, (movie_id, emoji) in enumerate(zip(movie_ids, emojis), start=1):
                 entry_values = {
                     "id": entry_id,
@@ -513,7 +544,7 @@ class GoogleSheetsStorageProvider(StorageProvider):
                     "position": pos,
                     "emoji": emoji,
                 }
-                ws_entries.append_row(self._pack_row("poll_entries", entry_values), value_input_option="RAW")
+                _retry_call(ws_entries.append_row, self._pack_row("poll_entries", entry_values), value_input_option="RAW")
                 entry_id += 1
             self._cache.drop("polls")
             self._cache.drop("poll_entries")
@@ -575,9 +606,9 @@ class GoogleSheetsStorageProvider(StorageProvider):
             status_col = self._col_idx("polls", "status")
             closed_col = self._col_idx("polls", "closed_at")
             if status_col:
-                ws.update_cell(row_idx, status_col, "closed")
+                _retry_call(ws.update_cell, row_idx, status_col, "closed")
             if closed_col:
-                ws.update_cell(row_idx, closed_col, _now_iso())
+                _retry_call(ws.update_cell, row_idx, closed_col, _now_iso())
             self._cache.drop("polls")
 
         await asyncio.to_thread(_do)
@@ -617,20 +648,20 @@ class GoogleSheetsStorageProvider(StorageProvider):
             # Collect all matching entry row indices, then delete bottom-up
             # so earlier deletions don't shift later indices.
             if poll_id_col is not None:
-                all_rows = ws_entries.get_all_values()
+                all_rows = _retry_call(ws_entries.get_all_values)
                 to_delete = [
                     i for i, r in enumerate(all_rows[1:], start=2)
                     if r and poll_id_col < len(r) and r[poll_id_col] == str(poll_id)
                 ]
                 for row_idx in sorted(to_delete, reverse=True):
-                    ws_entries.delete_rows(row_idx)
+                    _retry_call(ws_entries.delete_rows, row_idx)
                 if to_delete:
                     self._cache.drop("poll_entries")
 
             ws_polls = self._ws("polls")
             poll_row = self._find_row_idx(ws_polls, poll_id, "polls")
             if poll_row is not None:
-                ws_polls.delete_rows(poll_row)
+                _retry_call(ws_polls.delete_rows, poll_row)
                 self._cache.drop("polls")
 
         await asyncio.to_thread(_do)
@@ -640,7 +671,7 @@ class GoogleSheetsStorageProvider(StorageProvider):
             ws = self._ws("poll_entries")
             row_idx = self._find_row_idx(ws, entry_id, "poll_entries")
             if row_idx is not None:
-                ws.delete_rows(row_idx)
+                _retry_call(ws.delete_rows, row_idx)
                 self._cache.drop("poll_entries")
 
         await asyncio.to_thread(_do)
@@ -655,7 +686,7 @@ class GoogleSheetsStorageProvider(StorageProvider):
     ) -> ScheduleEntry:
         def _do() -> int:
             ws = self._ws("schedule_entries")
-            rows = ws.get_all_values()[1:]
+            rows = _retry_call(ws.get_all_values)[1:]
             movie_col = self._cols["schedule_entries"].get("movie_id")
             if movie_col is not None:
                 for r in rows:
@@ -671,7 +702,7 @@ class GoogleSheetsStorageProvider(StorageProvider):
                 "posted_msg_id": "",
                 "created_at": _now_iso(),
             }
-            ws.append_row(self._pack_row("schedule_entries", values), value_input_option="RAW")
+            _retry_call(ws.append_row, self._pack_row("schedule_entries", values), value_input_option="RAW")
             self._cache.drop("schedule_entries")
             return new_id
 
@@ -720,7 +751,7 @@ class GoogleSheetsStorageProvider(StorageProvider):
         def _do() -> ScheduleEntry:
             ws = self._ws("schedule_entries")
             id_col = self._cols["schedule_entries"].get("id", 0)
-            all_rows = ws.get_all_values()
+            all_rows = _retry_call(ws.get_all_values)
             row_idx = None
             current_row: list[str] = []
             for i, r in enumerate(all_rows[1:], start=2):
@@ -735,7 +766,7 @@ class GoogleSheetsStorageProvider(StorageProvider):
                 if col is None:
                     continue
                 str_val = _to_str(value)
-                ws.update_cell(row_idx, col, str_val)
+                _retry_call(ws.update_cell, row_idx, col, str_val)
                 while len(current_row) < col:
                     current_row.append("")
                 current_row[col - 1] = str_val
@@ -749,7 +780,7 @@ class GoogleSheetsStorageProvider(StorageProvider):
             ws = self._ws("schedule_entries")
             row_idx = self._find_row_idx(ws, entry_id, "schedule_entries")
             if row_idx is not None:
-                ws.delete_rows(row_idx)
+                _retry_call(ws.delete_rows, row_idx)
                 self._cache.drop("schedule_entries")
 
         await asyncio.to_thread(_do)
@@ -802,13 +833,14 @@ class GoogleSheetsStorageProvider(StorageProvider):
             ws = self._ws("user_timezones")
             user_col = self._cols["user_timezones"].get("user_id", 0)
             tz_col = self._cols["user_timezones"].get("tz_name", 1)
-            all_rows = ws.get_all_values()
+            all_rows = _retry_call(ws.get_all_values)
             for i, r in enumerate(all_rows[1:], start=2):
                 if r and user_col < len(r) and r[user_col] == user_id:
-                    ws.update_cell(i, tz_col + 1, tz_name)
+                    _retry_call(ws.update_cell, i, tz_col + 1, tz_name)
                     self._cache.drop("user_timezones")
                     return
-            ws.append_row(
+            _retry_call(
+                ws.append_row,
                 self._pack_row("user_timezones", {"user_id": user_id, "tz_name": tz_name}),
                 value_input_option="RAW",
             )
