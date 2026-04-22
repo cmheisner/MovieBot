@@ -114,6 +114,10 @@ class GoogleSheetsStorageProvider(StorageProvider):
         self._cols: dict[str, dict[str, int]] = {}
         # name -> total header count (row width to preserve on writes)
         self._widths: dict[str, int] = {}
+        # Cached worksheet handles. gspread's Spreadsheet.worksheet(name) issues a
+        # fetch_sheet_metadata API read every call; caching here eliminates that
+        # read from every mutation and list-query path.
+        self._worksheets: dict[str, gspread.Worksheet] = {}
 
     # ── Init ─────────────────────────────────────────────────────────────
 
@@ -144,11 +148,11 @@ class GoogleSheetsStorageProvider(StorageProvider):
                 creds = Credentials.from_service_account_file(self._credentials_path, scopes=SCOPES)
             gc = gspread.authorize(creds)
             self._ss = gc.open_by_key(self._spreadsheet_id)
-            self._ensure_sheet("movies", DEFAULT_MOVIE_HEADERS)
-            self._ensure_sheet("polls", DEFAULT_POLL_HEADERS)
-            self._ensure_sheet("poll_entries", DEFAULT_POLL_ENTRY_HEADERS)
-            self._ensure_sheet("schedule_entries", DEFAULT_SCHEDULE_HEADERS)
-            self._ensure_sheet("user_timezones", DEFAULT_TZ_HEADERS)
+            self._worksheets["movies"] = self._ensure_sheet("movies", DEFAULT_MOVIE_HEADERS)
+            self._worksheets["polls"] = self._ensure_sheet("polls", DEFAULT_POLL_HEADERS)
+            self._worksheets["poll_entries"] = self._ensure_sheet("poll_entries", DEFAULT_POLL_ENTRY_HEADERS)
+            self._worksheets["schedule_entries"] = self._ensure_sheet("schedule_entries", DEFAULT_SCHEDULE_HEADERS)
+            self._worksheets["user_timezones"] = self._ensure_sheet("user_timezones", DEFAULT_TZ_HEADERS)
             for name in ("movies", "polls", "poll_entries", "schedule_entries", "user_timezones"):
                 self._load_header_map(name)
             log.info("Sheets: loaded header maps: %s", {k: list(v.keys()) for k, v in self._cols.items()})
@@ -176,7 +180,7 @@ class GoogleSheetsStorageProvider(StorageProvider):
     # ── Internal helpers ─────────────────────────────────────────────────
 
     def _ws(self, name: str) -> gspread.Worksheet:
-        return self._ss.worksheet(name)
+        return self._worksheets[name]
 
     def _rows(self, name: str) -> list[list[str]]:
         """Data rows only (header excluded). Served from cache when available."""
