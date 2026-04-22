@@ -21,7 +21,8 @@
       "Bash(git *)",
       "Read(//home/brandon/.ssh/**)",
       "Bash(.venv/bin/python -c \"from bot.utils import restart_notify; print\\(restart_notify.MARKER_PATH\\)\")",
-      "Bash(venv/bin/python -c \"from bot.utils import restart_notify; print\\(restart_notify.MARKER_PATH\\)\")"
+      "Bash(venv/bin/python -c \"from bot.utils import restart_notify; print\\(restart_notify.MARKER_PATH\\)\")",
+      "Bash(pip install *)"
     ]
   }
 }

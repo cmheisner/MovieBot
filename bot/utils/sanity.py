@@ -48,9 +48,15 @@ def _trust_score(m: Movie) -> tuple[int, int, int]:
     return (status_rank, completeness, -m.id)
 
 
-async def run_sanity_check(storage: StorageProvider) -> SanityReport:
+async def run_sanity_check(storage: StorageProvider, dry_run: bool = False) -> SanityReport:
     """Audit the backing store, auto-fix what's safely fixable, and return
-    a structured list of remaining issues for humans."""
+    a structured list of remaining issues for humans.
+
+    When dry_run=True, no writes are issued; report.fixes describes what
+    *would* be fixed so callers can present a read-only diagnostic view.
+    Local bookkeeping still advances so cascading steps report accurately
+    (e.g. a movie "would-be skipped" in step 3 won't re-trigger in step 7).
+    """
     report = SanityReport()
 
     # ── Step 1: multiple open polls — keep the most recent, delete others ──
@@ -64,7 +70,8 @@ async def run_sanity_check(storage: StorageProvider) -> SanityReport:
         keep = open_polls[0]
         for stale in open_polls[1:]:
             entry_count = len(stale.entries or [])
-            await storage.delete_poll(stale.id)
+            if not dry_run:
+                await storage.delete_poll(stale.id)
             report.fixes.append(
                 f"Deleted orphaned open poll id={stale.id} "
                 f"({entry_count} entries) — kept id={keep.id} as active."
@@ -79,7 +86,8 @@ async def run_sanity_check(storage: StorageProvider) -> SanityReport:
     movies_by_id: dict[int, Movie] = {m.id: m for m in all_movies}
     for m in list(movies_by_id.values()):
         if not (m.title or "").strip():
-            await storage.delete_movie(m.id)
+            if not dry_run:
+                await storage.delete_movie(m.id)
             report.fixes.append(f"Deleted movie id={m.id} — missing title.")
             log.info("Sanity: deleted movie id=%d (missing title)", m.id)
             movies_by_id.pop(m.id, None)
@@ -108,13 +116,14 @@ async def run_sanity_check(storage: StorageProvider) -> SanityReport:
                     if val:
                         backfill[field_name] = val
                         break
-        if backfill:
+        if backfill and not dry_run:
             updated = await storage.update_movie(winner.id, **backfill)
             if updated:
                 movies_by_id[winner.id] = updated
 
         for loser in losers:
-            await storage.update_movie(loser.id, status=MovieStatus.SKIPPED)
+            if not dry_run:
+                await storage.update_movie(loser.id, status=MovieStatus.SKIPPED)
             loser.status = MovieStatus.SKIPPED
             movies_by_id[loser.id] = loser
 
@@ -134,13 +143,15 @@ async def run_sanity_check(storage: StorageProvider) -> SanityReport:
     for entry in schedule_entries:
         movie = movies_by_id.get(entry.movie_id)
         if movie is None:
-            await storage.delete_schedule_entry(entry.id)
+            if not dry_run:
+                await storage.delete_schedule_entry(entry.id)
             report.fixes.append(
                 f"Deleted orphan schedule entry id={entry.id} — movie id={entry.movie_id} not found."
             )
             log.info("Sanity: deleted schedule entry id=%d (movie missing)", entry.id)
         elif movie.status == MovieStatus.SKIPPED:
-            await storage.delete_schedule_entry(entry.id)
+            if not dry_run:
+                await storage.delete_schedule_entry(entry.id)
             report.fixes.append(
                 f"Deleted orphan schedule entry id={entry.id} — movie id={movie.id} is skipped."
             )
@@ -153,19 +164,22 @@ async def run_sanity_check(storage: StorageProvider) -> SanityReport:
     for pe in poll_entries:
         movie = movies_by_id.get(pe.movie_id)
         if pe.poll_id not in poll_ids:
-            await storage.delete_poll_entry(pe.id)
+            if not dry_run:
+                await storage.delete_poll_entry(pe.id)
             report.fixes.append(
                 f"Deleted orphan poll entry id={pe.id} — poll id={pe.poll_id} not found."
             )
             log.info("Sanity: deleted poll entry id=%d (poll missing)", pe.id)
         elif movie is None:
-            await storage.delete_poll_entry(pe.id)
+            if not dry_run:
+                await storage.delete_poll_entry(pe.id)
             report.fixes.append(
                 f"Deleted orphan poll entry id={pe.id} — movie id={pe.movie_id} not found."
             )
             log.info("Sanity: deleted poll entry id=%d (movie missing)", pe.id)
         elif movie.status == MovieStatus.SKIPPED:
-            await storage.delete_poll_entry(pe.id)
+            if not dry_run:
+                await storage.delete_poll_entry(pe.id)
             report.fixes.append(
                 f"Deleted orphan poll entry id={pe.id} — movie id={movie.id} is skipped."
             )
@@ -177,9 +191,11 @@ async def run_sanity_check(storage: StorageProvider) -> SanityReport:
         if entry.scheduled_for is not None:
             continue
         movie = movies_by_id.get(entry.movie_id)
-        await storage.delete_schedule_entry(entry.id)
+        if not dry_run:
+            await storage.delete_schedule_entry(entry.id)
         if movie and movie.status == MovieStatus.SCHEDULED:
-            await storage.update_movie(movie.id, status=MovieStatus.STASH)
+            if not dry_run:
+                await storage.update_movie(movie.id, status=MovieStatus.STASH)
             movie.status = MovieStatus.STASH
             movies_by_id[movie.id] = movie
             report.fixes.append(
@@ -199,7 +215,8 @@ async def run_sanity_check(storage: StorageProvider) -> SanityReport:
     scheduled_movie_ids = {e.movie_id for e in schedule_final}
     for movie in list(movies_by_id.values()):
         if movie.status == MovieStatus.SCHEDULED and movie.id not in scheduled_movie_ids:
-            await storage.update_movie(movie.id, status=MovieStatus.STASH)
+            if not dry_run:
+                await storage.update_movie(movie.id, status=MovieStatus.STASH)
             movie.status = MovieStatus.STASH
             movies_by_id[movie.id] = movie
             report.fixes.append(
@@ -222,7 +239,8 @@ async def run_sanity_check(storage: StorageProvider) -> SanityReport:
             reason = f"not in active poll id={open_poll.id}"
         else:
             continue
-        await storage.update_movie(movie.id, status=MovieStatus.STASH)
+        if not dry_run:
+            await storage.update_movie(movie.id, status=MovieStatus.STASH)
         movie.status = MovieStatus.STASH
         movies_by_id[movie.id] = movie
         report.fixes.append(

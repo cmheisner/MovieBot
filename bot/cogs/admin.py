@@ -228,58 +228,68 @@ class AdminCog(commands.Cog, name="Admin"):
             ephemeral=True,
         )
 
-    # ── /defrag ───────────────────────────────────────────────────────────
+    # ── /debug ────────────────────────────────────────────────────────────
 
     @app_commands.command(
-        name="defrag",
-        description="[Admin] Pull future movies back one week to fill any gap weeks (Wed+Thu both empty).",
+        name="debug",
+        description="[Admin] Read-only report of database + schedule problems. Makes no changes.",
     )
     @app_commands.checks.has_permissions(manage_guild=True)
-    async def defrag(self, interaction: discord.Interaction) -> None:
-        log.info("Defrag requested by %s (id=%d).", interaction.user, interaction.user.id)
-        await interaction.response.defer()
+    async def debug(self, interaction: discord.Interaction) -> None:
+        log.info("Debug report requested by %s (id=%d).", interaction.user, interaction.user.id)
+        await interaction.response.defer(ephemeral=True)
+
+        try:
+            report = await run_sanity_check(self.bot.storage, dry_run=True)
+        except Exception as exc:
+            log.exception("Debug report failed.")
+            await interaction.followup.send(f"⚠️ Debug report failed: {exc}", ephemeral=True)
+            return
+
         entries = await self.bot.storage.list_schedule_entries(upcoming_only=False, limit=500)
-        entries_asc = sorted(entries, key=lambda e: e.scheduled_for)
-        if not entries_asc:
-            await interaction.followup.send("ℹ️ Nothing scheduled — no gaps to fix.", ephemeral=True)
+        entries_asc = sorted(
+            (e for e in entries if e.scheduled_for is not None),
+            key=lambda e: e.scheduled_for,
+        )
+        gap_weeks = _find_all_gaps(entries_asc)
+
+        fix_count = len(report.fixes)
+        issue_count = len(report.issues)
+        gap_count = len(gap_weeks)
+        log.info(
+            "Debug report — %d would-fix, %d flagged, %d gap weeks.",
+            fix_count, issue_count, gap_count,
+        )
+
+        parts = [f"**Would auto-fix ({fix_count}):**"]
+        if report.fixes:
+            parts.extend(f"• {line}" for line in report.fixes)
+        else:
+            parts.append("• _(nothing)_")
+        parts.append("")
+        parts.append(f"**Needs human attention ({issue_count}):**")
+        if report.issues:
+            parts.extend(f"• {line}" for line in report.issues)
+        else:
+            parts.append("• _(all clear)_")
+        parts.append("")
+        parts.append(f"**Schedule gap weeks ({gap_count}):**")
+        if gap_weeks:
+            parts.extend(f"• Week of {wk.strftime('%b %d, %Y')}" for wk in gap_weeks)
+        else:
+            parts.append("• _(no gaps)_")
+        body = "\n".join(parts)
+
+        if len(body) <= _SANITY_INLINE_CHAR_LIMIT:
+            await interaction.followup.send(body, ephemeral=True)
             return
 
-        total_shifts = 0
-        filled_weeks: list[date] = []
-        MAX_PASSES = 60  # safety bound
-
-        for _ in range(MAX_PASSES):
-            gap_week = _find_first_gap(entries_asc)
-            if gap_week is None:
-                break
-            filled_weeks.append(gap_week)
-            for e in entries_asc:
-                if week_monday(e.scheduled_for) > gap_week:
-                    new_dt = e.scheduled_for - timedelta(days=7)
-                    if e.discord_event_id and interaction.guild:
-                        try:
-                            ev = await interaction.guild.fetch_scheduled_event(int(e.discord_event_id))
-                            await ev.delete()
-                        except Exception as exc:
-                            log.warning("defrag: could not delete event %s: %s", e.discord_event_id, exc)
-                        await self.bot.storage.update_schedule_entry(
-                            e.id, discord_event_id=None, scheduled_for=new_dt
-                        )
-                    else:
-                        await self.bot.storage.update_schedule_entry(e.id, scheduled_for=new_dt)
-                    e.scheduled_for = new_dt
-                    total_shifts += 1
-            entries_asc.sort(key=lambda x: x.scheduled_for)
-
-        if not filled_weeks:
-            await interaction.followup.send("✅ Schedule is already contiguous — no gaps found.")
-            return
-
-        lines = [f"🔧 Filled **{len(filled_weeks)}** gap week(s); shifted **{total_shifts}** entry move(s) earlier."]
-        for wk in filled_weeks:
-            lines.append(f"• Week of {wk.strftime('%b %d, %Y')}")
-        lines.append("\n-# Discord events will be recreated automatically within 24 h.")
-        await interaction.followup.send("\n".join(lines))
+        buf = io.BytesIO(body.encode("utf-8"))
+        await interaction.followup.send(
+            f"Debug report — {fix_count} would-fix, {issue_count} flagged, {gap_count} gap weeks (attached).",
+            file=discord.File(buf, filename="debug.txt"),
+            ephemeral=True,
+        )
 
     # ── Error handler ─────────────────────────────────────────────────────
 
@@ -310,19 +320,20 @@ class AdminCog(commands.Cog, name="Admin"):
             pass
 
 
-def _find_first_gap(entries_asc: list) -> date | None:
-    """Return the Monday of the first week with no entries, between first and last scheduled week."""
+def _find_all_gaps(entries_asc: list) -> list[date]:
+    """Return Mondays of every empty week between the first and last scheduled week."""
     if not entries_asc:
-        return None
+        return []
     weeks_with_entries = {week_monday(e.scheduled_for) for e in entries_asc}
     first = min(weeks_with_entries)
     last = max(weeks_with_entries)
+    gaps: list[date] = []
     cur = first + timedelta(days=7)
     while cur <= last:
         if cur not in weeks_with_entries:
-            return cur
+            gaps.append(cur)
         cur += timedelta(days=7)
-    return None
+    return gaps
 
 
 async def setup(bot: commands.Bot) -> None:
