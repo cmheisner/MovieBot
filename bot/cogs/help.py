@@ -36,7 +36,7 @@ class HelpCog(commands.Cog, name="Help"):
                 "`/schedule list` — Show upcoming movies\n"
                 "`/schedule add` — Schedule a stash or skipped movie\n"
                 "`/schedule remove` — Remove a scheduled movie (returns to stash)\n"
-                "`/schedule reschedule` — Move a scheduled movie to a new date\n"
+                "`/schedule move` — Move a scheduled movie to a new date (swap/move UI on conflicts)\n"
                 "`/schedule calendar` — Show the calendar for a given month/year"
             ),
             inline=False,
