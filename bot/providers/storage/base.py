@@ -54,6 +54,17 @@ class StorageProvider(ABC):
         pass
 
     @abstractmethod
+    async def bulk_update_movies(self, updates: dict[int, dict]) -> None:
+        """Apply many movie updates in a single backend operation.
+
+        ``updates`` maps movie_id to a dict of the same fields accepted by
+        ``update_movie``. No-op when ``updates`` is empty. Raises ValueError
+        if any movie_id is not found (strict, matches ``update_movie``).
+
+        Returns None — callers that need the updated object should re-fetch.
+        """
+
+    @abstractmethod
     async def delete_movie(self, movie_id: int) -> None:
         pass
 
@@ -123,6 +134,15 @@ class StorageProvider(ABC):
     @abstractmethod
     async def update_schedule_entry(self, entry_id: int, **fields) -> ScheduleEntry:
         pass
+
+    @abstractmethod
+    async def bulk_update_schedule_entries(self, updates: dict[int, dict]) -> None:
+        """Apply many schedule-entry updates in a single backend operation.
+
+        ``updates`` maps entry_id to a dict of the same fields accepted by
+        ``update_schedule_entry``. No-op when ``updates`` is empty. Raises
+        ValueError if any entry_id is not found.
+        """
 
     @abstractmethod
     async def delete_schedule_entry(self, entry_id: int) -> None:

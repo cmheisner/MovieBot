@@ -246,6 +246,18 @@ class SQLiteStorageProvider(StorageProvider):
         await self._db.commit()
         return await self.get_movie(movie_id)
 
+    async def bulk_update_movies(self, updates: dict[int, dict]) -> None:
+        # SQLite has no per-op quota and its own transactional guarantees, so a
+        # sequential loop inside one commit is sufficient interface parity.
+        if not updates:
+            return
+        for movie_id in updates:
+            existing = await self.get_movie(movie_id)
+            if existing is None:
+                raise ValueError(f"Movie id={movie_id} not found.")
+        for movie_id, fields in updates.items():
+            await self.update_movie(movie_id, **fields)
+
     async def delete_movie(self, movie_id: int) -> None:
         await self._db.execute("DELETE FROM movies WHERE id = ?", (movie_id,))
         await self._db.commit()
@@ -418,6 +430,16 @@ class SQLiteStorageProvider(StorageProvider):
         await self._db.execute(f"UPDATE schedule_entries SET {set_clause} WHERE id = ?", values)
         await self._db.commit()
         return await self.get_schedule_entry(entry_id)
+
+    async def bulk_update_schedule_entries(self, updates: dict[int, dict]) -> None:
+        if not updates:
+            return
+        for entry_id in updates:
+            existing = await self.get_schedule_entry(entry_id)
+            if existing is None:
+                raise ValueError(f"Schedule entry id={entry_id} not found.")
+        for entry_id, fields in updates.items():
+            await self.update_schedule_entry(entry_id, **fields)
 
     async def delete_schedule_entry(self, entry_id: int) -> None:
         await self._db.execute("DELETE FROM schedule_entries WHERE id = ?", (entry_id,))

@@ -99,6 +99,9 @@ class MaintenanceCog(commands.Cog, name="Maintenance"):
     async def _run_integrity_check(self) -> None:
         storage = self.bot.storage
         fixes = 0
+        # Accumulate all "reset to stash" writes across the three detection
+        # passes so they flush in a single bulk API call at the end.
+        stash_resets: dict[int, dict] = {}
 
         try:
             all_movies = await storage.list_movies(status="all")
@@ -109,14 +112,14 @@ class MaintenanceCog(commands.Cog, name="Maintenance"):
             nominated = [m for m in all_movies if m.status == MovieStatus.NOMINATED]
             if nominated and open_poll is None:
                 for movie in nominated:
-                    await storage.update_movie(movie.id, status=MovieStatus.STASH)
+                    stash_resets[movie.id] = {"status": MovieStatus.STASH}
                     log.warning("Integrity: reset nominated movie id=%d (%r) to stash — no open poll found.", movie.id, movie.title)
                     fixes += 1
             elif nominated and open_poll is not None:
                 poll_movie_ids = {e.movie_id for e in (open_poll.entries or [])}
                 for movie in nominated:
                     if movie.id not in poll_movie_ids:
-                        await storage.update_movie(movie.id, status=MovieStatus.STASH)
+                        stash_resets[movie.id] = {"status": MovieStatus.STASH}
                         log.warning("Integrity: reset nominated movie id=%d (%r) to stash — not in active poll.", movie.id, movie.title)
                         fixes += 1
 
@@ -125,11 +128,15 @@ class MaintenanceCog(commands.Cog, name="Maintenance"):
             for movie in scheduled:
                 entry = await storage.get_schedule_entry_for_movie(movie.id)
                 if entry is None:
-                    await storage.update_movie(movie.id, status=MovieStatus.STASH)
+                    stash_resets[movie.id] = {"status": MovieStatus.STASH}
                     log.warning("Integrity: reset scheduled movie id=%d (%r) to stash — no schedule entry found.", movie.id, movie.title)
                     fixes += 1
 
+            if stash_resets:
+                await storage.bulk_update_movies(stash_resets)
+
             # Schedule entries pointing to non-existent movies → delete
+            # (not batched — delete semantics are trickier and low frequency)
             schedule_entries = await storage.list_schedule_entries(upcoming_only=False, limit=500)
             for entry in schedule_entries:
                 if entry.movie_id not in movie_ids:
@@ -167,9 +174,11 @@ class MaintenanceCog(commands.Cog, name="Maintenance"):
                 else:
                     seen[key] = movie.id
 
-            for movie_id in duplicates:
-                await storage.update_movie(movie_id, status=MovieStatus.SKIPPED)
-                removed += 1
+            if duplicates:
+                await storage.bulk_update_movies({
+                    mid: {"status": MovieStatus.SKIPPED} for mid in duplicates
+                })
+                removed = len(duplicates)
 
             if removed:
                 log.info("Duplicate scan: removed %d duplicate(s).", removed)
@@ -206,7 +215,11 @@ class MaintenanceCog(commands.Cog, name="Maintenance"):
     async def _run_auto_mark_watched(self) -> None:
         """Mark any scheduled movies whose date has passed as watched and clean up their Discord events."""
         now = datetime.now(dt_timezone.utc)
-        marked = 0
+        # Accumulate Sheets writes so all mutations flush in two bulk calls
+        # instead of two per past entry. Discord event deletes are a different
+        # API and stay per-entry.
+        entry_updates: dict[int, dict] = {}
+        movie_updates: dict[int, dict] = {}
         try:
             all_entries = await self.bot.storage.list_schedule_entries(upcoming_only=False, limit=500)
             past_entries = [e for e in all_entries if e.scheduled_for < now]
@@ -216,7 +229,6 @@ class MaintenanceCog(commands.Cog, name="Maintenance"):
                 if not movie or movie.status != MovieStatus.SCHEDULED:
                     continue
 
-                # Delete Discord event if present
                 if entry.discord_event_id:
                     guild = self.bot.get_guild(self.bot.config.guild_id)
                     if guild:
@@ -225,12 +237,17 @@ class MaintenanceCog(commands.Cog, name="Maintenance"):
                             await event.delete()
                         except Exception as exc:
                             log.warning("Auto-watched: could not delete event for %r: %s", movie.title, exc)
-                    await self.bot.storage.update_schedule_entry(entry.id, discord_event_id=None)
+                    entry_updates[entry.id] = {"discord_event_id": None}
 
-                await self.bot.storage.update_movie(movie.id, status=MovieStatus.WATCHED)
-                log.info("Auto-watched: marked %r (id=%d) as watched.", movie.title, movie.id)
-                marked += 1
+                movie_updates[movie.id] = {"status": MovieStatus.WATCHED}
+                log.info("Auto-watched: marking %r (id=%d) as watched.", movie.title, movie.id)
 
+            if entry_updates:
+                await self.bot.storage.bulk_update_schedule_entries(entry_updates)
+            if movie_updates:
+                await self.bot.storage.bulk_update_movies(movie_updates)
+
+            marked = len(movie_updates)
             if marked:
                 log.info("Auto-watched: marked %d movie(s) as watched.", marked)
             else:

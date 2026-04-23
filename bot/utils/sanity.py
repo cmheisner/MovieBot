@@ -100,6 +100,10 @@ async def run_sanity_check(storage: StorageProvider, dry_run: bool = False) -> S
         key = (m.title.strip().lower(), m.year)
         groups.setdefault(key, []).append(m)
 
+    # Accumulate loser skip writes across every dedup group and flush in one
+    # bulk call after the loop. Winner backfills stay per-winner because they
+    # use the returned Movie object to refresh movies_by_id.
+    skipped_losers: dict[int, dict] = {}
     for dupes in groups.values():
         live = [d for d in dupes if d.status != MovieStatus.SKIPPED]
         if len(live) <= 1:
@@ -122,8 +126,7 @@ async def run_sanity_check(storage: StorageProvider, dry_run: bool = False) -> S
                 movies_by_id[winner.id] = updated
 
         for loser in losers:
-            if not dry_run:
-                await storage.update_movie(loser.id, status=MovieStatus.SKIPPED)
+            skipped_losers[loser.id] = {"status": MovieStatus.SKIPPED}
             loser.status = MovieStatus.SKIPPED
             movies_by_id[loser.id] = loser
 
@@ -137,6 +140,9 @@ async def run_sanity_check(storage: StorageProvider, dry_run: bool = False) -> S
             winner.title, winner.year, winner.id, winner.status,
             [l.id for l in losers], list(backfill),
         )
+
+    if skipped_losers and not dry_run:
+        await storage.bulk_update_movies(skipped_losers)
 
     # ── Step 4: orphan schedule entries ─────────────────────────────────
     schedule_entries = await storage.list_schedule_entries(upcoming_only=False, limit=10000)
@@ -213,10 +219,10 @@ async def run_sanity_check(storage: StorageProvider, dry_run: bool = False) -> S
     # ── Step 7: scheduled status with no schedule entry → stash ──────────
     schedule_final = await storage.list_schedule_entries(upcoming_only=False, limit=10000)
     scheduled_movie_ids = {e.movie_id for e in schedule_final}
+    step7_reverts: dict[int, dict] = {}
     for movie in list(movies_by_id.values()):
         if movie.status == MovieStatus.SCHEDULED and movie.id not in scheduled_movie_ids:
-            if not dry_run:
-                await storage.update_movie(movie.id, status=MovieStatus.STASH)
+            step7_reverts[movie.id] = {"status": MovieStatus.STASH}
             movie.status = MovieStatus.STASH
             movies_by_id[movie.id] = movie
             report.fixes.append(
@@ -226,10 +232,13 @@ async def run_sanity_check(storage: StorageProvider, dry_run: bool = False) -> S
             log.info(
                 "Sanity: reverted movie id=%d to stash (no schedule entry)", movie.id,
             )
+    if step7_reverts and not dry_run:
+        await storage.bulk_update_movies(step7_reverts)
 
     # ── Step 8: nominated movies not in the current open poll → stash ───
     open_poll = await storage.get_latest_open_poll()
     poll_movie_ids = {e.movie_id for e in (open_poll.entries or [])} if open_poll else set()
+    step8_reverts: dict[int, dict] = {}
     for movie in list(movies_by_id.values()):
         if movie.status != MovieStatus.NOMINATED:
             continue
@@ -239,8 +248,7 @@ async def run_sanity_check(storage: StorageProvider, dry_run: bool = False) -> S
             reason = f"not in active poll id={open_poll.id}"
         else:
             continue
-        if not dry_run:
-            await storage.update_movie(movie.id, status=MovieStatus.STASH)
+        step8_reverts[movie.id] = {"status": MovieStatus.STASH}
         movie.status = MovieStatus.STASH
         movies_by_id[movie.id] = movie
         report.fixes.append(
@@ -249,6 +257,8 @@ async def run_sanity_check(storage: StorageProvider, dry_run: bool = False) -> S
         log.info(
             "Sanity: reverted nominated movie id=%d to stash (%s)", movie.id, reason,
         )
+    if step8_reverts and not dry_run:
+        await storage.bulk_update_movies(step8_reverts)
 
     # ── Flag-only checks: re-fetch to get the post-fix state ─────────────
     final_movies = await storage.list_movies(status="all")

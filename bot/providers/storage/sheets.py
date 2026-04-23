@@ -9,6 +9,7 @@ from typing import Optional
 
 import gspread
 from gspread.exceptions import APIError
+from gspread.utils import rowcol_to_a1
 from google.oauth2.service_account import Credentials
 
 from bot.models.movie import Movie, MovieStatus, TAG_NAMES, empty_tags
@@ -496,6 +497,62 @@ class GoogleSheetsStorageProvider(StorageProvider):
         await asyncio.to_thread(_do)
         return await self.get_movie(movie_id)
 
+    async def bulk_update_movies(self, updates: dict[int, dict]) -> None:
+        if not updates:
+            return
+
+        allowed = {"title", "year", "notes", "apple_tv_url", "image_url", "status", "omdb_data", "season", "tags"}
+
+        # Normalize each entry: filter to allowed fields, flatten tags dict,
+        # jsonify omdb_data. Matches update_movie's per-entry normalization.
+        normalized: dict[int, dict] = {}
+        for movie_id, fields in updates.items():
+            filtered = {k: v for k, v in fields.items() if k in allowed}
+            tag_updates = filtered.pop("tags", None)
+            if tag_updates:
+                for name in TAG_NAMES:
+                    if name in tag_updates:
+                        filtered[name] = tag_updates[name]
+            if "omdb_data" in filtered and isinstance(filtered["omdb_data"], dict):
+                filtered["omdb_data"] = json.dumps(filtered["omdb_data"])
+            normalized[movie_id] = filtered
+
+        def _do():
+            ws = self._ws("movies")
+            id_col = self._cols["movies"].get("id", 0)
+            all_rows = _retry_call(ws.get_all_values)
+
+            # Build id_str → 1-based row index once, used for every movie in the batch.
+            id_to_row: dict[str, int] = {}
+            for i, r in enumerate(all_rows[1:], start=2):
+                if r and id_col < len(r) and r[id_col]:
+                    id_to_row[r[id_col]] = i
+
+            missing = [mid for mid in normalized if str(mid) not in id_to_row]
+            if missing:
+                raise ValueError(f"Movies not found: {missing}")
+
+            ranges = []
+            for movie_id, fields in normalized.items():
+                row = id_to_row[str(movie_id)]
+                for field_name, value in fields.items():
+                    col = self._col_idx("movies", field_name)
+                    if col is None:
+                        continue  # column not in sheet — silently skip
+                    ranges.append({
+                        "range": rowcol_to_a1(row, col),
+                        "values": [[_to_str(value)]],
+                    })
+
+            if not ranges:
+                return
+
+            # USER_ENTERED so "TRUE"/"FALSE" become proper checkboxes, matching update_movie.
+            _retry_call(ws.batch_update, ranges, value_input_option="USER_ENTERED")
+            self._cache.drop("movies")
+
+        await asyncio.to_thread(_do)
+
     async def delete_movie(self, movie_id: int) -> None:
         def _do():
             ws = self._ws("movies")
@@ -774,6 +831,53 @@ class GoogleSheetsStorageProvider(StorageProvider):
             return self._row_to_schedule_entry(current_row)
 
         return await asyncio.to_thread(_do)
+
+    async def bulk_update_schedule_entries(self, updates: dict[int, dict]) -> None:
+        if not updates:
+            return
+
+        allowed = {"discord_event_id", "posted_msg_id", "scheduled_for"}
+
+        normalized: dict[int, dict] = {}
+        for entry_id, fields in updates.items():
+            filtered = {k: v for k, v in fields.items() if k in allowed}
+            if "scheduled_for" in filtered and isinstance(filtered["scheduled_for"], datetime):
+                filtered["scheduled_for"] = filtered["scheduled_for"].isoformat()
+            normalized[entry_id] = filtered
+
+        def _do():
+            ws = self._ws("schedule_entries")
+            id_col = self._cols["schedule_entries"].get("id", 0)
+            all_rows = _retry_call(ws.get_all_values)
+
+            id_to_row: dict[str, int] = {}
+            for i, r in enumerate(all_rows[1:], start=2):
+                if r and id_col < len(r) and r[id_col]:
+                    id_to_row[r[id_col]] = i
+
+            missing = [eid for eid in normalized if str(eid) not in id_to_row]
+            if missing:
+                raise ValueError(f"Schedule entries not found: {missing}")
+
+            ranges = []
+            for entry_id, fields in normalized.items():
+                row = id_to_row[str(entry_id)]
+                for field_name, value in fields.items():
+                    col = self._col_idx("schedule_entries", field_name)
+                    if col is None:
+                        continue
+                    ranges.append({
+                        "range": rowcol_to_a1(row, col),
+                        "values": [[_to_str(value)]],
+                    })
+
+            if not ranges:
+                return
+
+            _retry_call(ws.batch_update, ranges, value_input_option="RAW")
+            self._cache.drop("schedule_entries")
+
+        await asyncio.to_thread(_do)
 
     async def delete_schedule_entry(self, entry_id: int) -> None:
         def _do():
