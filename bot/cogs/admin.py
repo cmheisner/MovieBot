@@ -262,21 +262,16 @@ class AdminCog(commands.Cog, name="Admin"):
             ephemeral=True,
         )
 
-    # ── /backfill {omdb|tags} ────────────────────────────────────────────
+    # ── /sanity omdb ─────────────────────────────────────────────────────
 
-    backfill = app_commands.Group(
-        name="backfill",
-        description="[Admin] Enrich movie rows from OMDB or recompute tags.",
-    )
-
-    @backfill.command(
+    @sanity.command(
         name="omdb",
         description="[Admin] Fetch OMDB metadata for active movies that are missing it.",
     )
     @app_commands.checks.has_permissions(manage_guild=True)
-    async def backfill_omdb(self, interaction: discord.Interaction) -> None:
+    async def sanity_omdb(self, interaction: discord.Interaction) -> None:
         log.info(
-            "Backfill omdb requested by %s (id=%d).",
+            "Sanity omdb requested by %s (id=%d).",
             interaction.user, interaction.user.id,
         )
         await interaction.response.defer(ephemeral=True)
@@ -284,7 +279,7 @@ class AdminCog(commands.Cog, name="Admin"):
         try:
             all_movies = await self.bot.storage.list_movies(status="all")
         except Exception as exc:
-            log.exception("Backfill omdb: failed to list movies.")
+            log.exception("Sanity omdb: failed to list movies.")
             await interaction.followup.send(f"⚠️ Could not list movies: {exc}", ephemeral=True)
             return
 
@@ -309,7 +304,7 @@ class AdminCog(commands.Cog, name="Admin"):
             try:
                 omdb = await self.bot.media.fetch_metadata(cleaned_title, m.year)
             except Exception as exc:
-                log.warning("Backfill omdb: fetch failed for id=%d: %s", m.id, exc)
+                log.warning("Sanity omdb: fetch failed for id=%d: %s", m.id, exc)
                 omdb = None
             await asyncio.sleep(_OMDB_SLEEP_SECONDS)
 
@@ -330,7 +325,7 @@ class AdminCog(commands.Cog, name="Admin"):
             try:
                 await self.bot.storage.bulk_update_movies(updates)
             except Exception as exc:
-                log.exception("Backfill omdb: bulk update failed.")
+                log.exception("Sanity omdb: bulk update failed.")
                 await interaction.followup.send(
                     f"⚠️ Fetched {len(fetched)} row(s) from OMDB but the sheet write failed: {exc}",
                     ephemeral=True,
@@ -338,7 +333,7 @@ class AdminCog(commands.Cog, name="Admin"):
                 return
 
         log.info(
-            "Backfill omdb complete — fetched=%d, tagged=%d, missed=%d, skipped_no_year=%d.",
+            "Sanity omdb complete — fetched=%d, tagged=%d, missed=%d, skipped_no_year=%d.",
             len(fetched), len(tagged), len(missed), skipped_no_year,
         )
 
@@ -362,19 +357,21 @@ class AdminCog(commands.Cog, name="Admin"):
             return
         buf = io.BytesIO(body.encode("utf-8"))
         await interaction.followup.send(
-            f"OMDB backfill — {len(fetched)} fetched, {len(missed)} miss (attached).",
-            file=discord.File(buf, filename="backfill_omdb.txt"),
+            f"Sanity omdb — {len(fetched)} fetched, {len(missed)} miss (attached).",
+            file=discord.File(buf, filename="sanity_omdb.txt"),
             ephemeral=True,
         )
 
-    @backfill.command(
+    # ── /sanity tags ─────────────────────────────────────────────────────
+
+    @sanity.command(
         name="tags",
         description="[Admin] Recompute genre tags for active movies that have omdb_data but no tags set.",
     )
     @app_commands.checks.has_permissions(manage_guild=True)
-    async def backfill_tags_cmd(self, interaction: discord.Interaction) -> None:
+    async def sanity_tags(self, interaction: discord.Interaction) -> None:
         log.info(
-            "Backfill tags requested by %s (id=%d).",
+            "Sanity tags requested by %s (id=%d).",
             interaction.user, interaction.user.id,
         )
         await interaction.response.defer(ephemeral=True)
@@ -382,7 +379,7 @@ class AdminCog(commands.Cog, name="Admin"):
         try:
             all_movies = await self.bot.storage.list_movies(status="all")
         except Exception as exc:
-            log.exception("Backfill tags: failed to list movies.")
+            log.exception("Sanity tags: failed to list movies.")
             await interaction.followup.send(f"⚠️ Could not list movies: {exc}", ephemeral=True)
             return
 
@@ -394,27 +391,30 @@ class AdminCog(commands.Cog, name="Admin"):
         ]
 
         updates: dict[int, dict] = {}
-        no_mapping: list[int] = []
+        no_mapping: list[tuple[int, str]] = []  # (id, genre_string)
         for m in targets:
             computed = tags_from_omdb(m.omdb_data)
             if any(computed.values()):
                 updates[m.id] = {"tags": computed}
             else:
                 # Has omdb_data but OMDB's Genre didn't map to any of our 8 tags.
-                no_mapping.append(m.id)
+                # Record Genre so the operator can decide: extend the mapping,
+                # set tags manually, or accept as legitimately untagged.
+                genre = (m.omdb_data or {}).get("Genre") or "—"
+                no_mapping.append((m.id, genre))
 
         if updates:
             try:
                 await self.bot.storage.bulk_update_movies(updates)
             except Exception as exc:
-                log.exception("Backfill tags: bulk update failed.")
+                log.exception("Sanity tags: bulk update failed.")
                 await interaction.followup.send(
                     f"⚠️ Sheet write failed: {exc}", ephemeral=True,
                 )
                 return
 
         log.info(
-            "Backfill tags complete — retagged=%d, no_mapping=%d.",
+            "Sanity tags complete — retagged=%d, no_mapping=%d.",
             len(updates), len(no_mapping),
         )
 
@@ -426,9 +426,8 @@ class AdminCog(commands.Cog, name="Admin"):
         ]
         if no_mapping:
             parts.append("")
-            parts.append(
-                f"ids with no mapping: {no_mapping}"
-            )
+            parts.append("**No-mapping rows — OMDB Genre didn't match any of our 8 tags:**")
+            parts.extend(f"• id={mid} (Genre: {genre!r})" for mid, genre in no_mapping)
 
         body = "\n".join(parts)
         if len(body) <= _SANITY_INLINE_CHAR_LIMIT:
@@ -436,8 +435,8 @@ class AdminCog(commands.Cog, name="Admin"):
             return
         buf = io.BytesIO(body.encode("utf-8"))
         await interaction.followup.send(
-            f"Tag backfill — {len(updates)} retagged, {len(no_mapping)} no-mapping (attached).",
-            file=discord.File(buf, filename="backfill_tags.txt"),
+            f"Sanity tags — {len(updates)} retagged, {len(no_mapping)} no-mapping (attached).",
+            file=discord.File(buf, filename="sanity_tags.txt"),
             ephemeral=True,
         )
 
@@ -478,6 +477,23 @@ def _format_detail(report, *, dry_run: bool) -> str:
     else:
         parts.append("• _(nothing)_")
     parts.append("")
+
+    # Preview what the subcommands would do, so /sanity test gives a real
+    # impact forecast rather than an always-empty "would auto-fix" block.
+    omdb_candidates = report.omdb_backfill_candidates
+    tag_candidates = report.tag_backfill_candidates
+    if omdb_candidates or tag_candidates:
+        parts.append("**Would enrich via subcommands:**")
+        if omdb_candidates:
+            parts.append(
+                f"• `/sanity omdb` → {len(omdb_candidates)} row(s) (ids={omdb_candidates})"
+            )
+        if tag_candidates:
+            parts.append(
+                f"• `/sanity tags` → {len(tag_candidates)} row(s) (ids={tag_candidates})"
+            )
+        parts.append("")
+
     parts.append(f"**Needs human attention ({len(report.issues)}):**")
     if report.issues:
         parts.extend(f"• {line}" for line in report.issues)

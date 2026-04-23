@@ -47,6 +47,11 @@ class SanityReport:
     # aggregated bullet types emitted into `issues`. Zero-valued entries are
     # omitted so the summary formatter only prints categories with matches.
     counts: dict[str, int] = field(default_factory=dict)
+    # Rows the backfill subcommands would actually change. Lets /sanity test
+    # preview impact of /sanity omdb and /sanity tags. Selection logic mirrors
+    # the subcommands exactly, so test-then-run is guaranteed consistent.
+    omdb_backfill_candidates: list[int] = field(default_factory=list)
+    tag_backfill_candidates: list[int] = field(default_factory=list)
 
 
 def _trust_score(m: Movie) -> tuple[int, int, int]:
@@ -351,9 +356,21 @@ async def run_sanity_check(
         if m.status not in _ACTIVE_STATUSES:
             continue
 
+        # Backfill candidates — mirror the subcommands' selection so /sanity
+        # test previews match what /sanity omdb and /sanity tags would do.
+        row_has_tags = any(m.tags.get(t) for t in TAG_NAMES)
+        if not m.omdb_data and m.year:
+            report.omdb_backfill_candidates.append(m.id)
+        elif m.omdb_data and not row_has_tags:
+            computed = tags_from_omdb(m.omdb_data)
+            if any(computed.values()):
+                # Only list candidates that would actually get new tags —
+                # skip rows whose OMDB Genre doesn't map to any of our 8.
+                report.tag_backfill_candidates.append(m.id)
+
         if not (m.season or "").strip():
             missing_season.append(m.id)
-        if not any(m.tags.get(t) for t in TAG_NAMES):
+        if not row_has_tags:
             missing_tags.append(m.id)
         if not m.omdb_data:
             missing_omdb.append(m.id)

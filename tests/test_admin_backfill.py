@@ -1,4 +1,4 @@
-"""Coverage for the /backfill omdb and /backfill tags command bodies.
+"""Coverage for the /sanity omdb and /sanity tags command bodies.
 
 Focus: selection criteria (what rows get touched), batching (how writes flush),
 and idempotency (rows already populated are left alone). The actual Discord
@@ -88,7 +88,7 @@ def _invoke(cmd, cog, interaction):
     asyncio.run(cmd.callback(cog, interaction))
 
 
-# ── /backfill omdb ──────────────────────────────────────────────────────────
+# ── /sanity omdb ────────────────────────────────────────────────────────────
 
 def test_backfill_omdb_only_touches_active_missing_rows():
     """WATCHED, SKIPPED, and already-populated rows are left alone."""
@@ -102,7 +102,7 @@ def test_backfill_omdb_only_touches_active_missing_rows():
         ("movie", 2020): {"Title": "Movie", "Year": "2020", "Genre": "Drama"},
     })
 
-    _invoke(cog.backfill_omdb, cog, _fake_interaction())
+    _invoke(cog.sanity_omdb, cog, _fake_interaction())
 
     assert bot.media.calls == [("Movie", 2020)]
     assert len(bot.storage.bulk_calls) == 1
@@ -115,7 +115,7 @@ def test_backfill_omdb_writes_tags_when_row_untagged():
         ("movie", 2020): {"Genre": "Drama, Action"},
     })
 
-    _invoke(cog.backfill_omdb, cog, _fake_interaction())
+    _invoke(cog.sanity_omdb, cog, _fake_interaction())
 
     assert len(bot.storage.bulk_calls) == 1
     patch = bot.storage.bulk_calls[0][1]
@@ -133,7 +133,7 @@ def test_backfill_omdb_preserves_existing_tags():
         ("movie", 2020): {"Genre": "Drama, Action"},  # would normally tag these
     })
 
-    _invoke(cog.backfill_omdb, cog, _fake_interaction())
+    _invoke(cog.sanity_omdb, cog, _fake_interaction())
 
     patch = bot.storage.bulk_calls[0][1]
     assert "omdb_data" in patch
@@ -147,7 +147,7 @@ def test_backfill_omdb_strips_year_suffix_before_fetch():
         ("foo", 1996): {"Genre": "Drama"},
     })
 
-    _invoke(cog.backfill_omdb, cog, _fake_interaction())
+    _invoke(cog.sanity_omdb, cog, _fake_interaction())
 
     assert bot.media.calls == [("Foo", 1996)]
 
@@ -156,7 +156,7 @@ def test_backfill_omdb_skips_rows_without_year():
     movies = [_movie(1, year=0, omdb_data=None)]
     cog, bot = _make_cog(movies, {})
 
-    _invoke(cog.backfill_omdb, cog, _fake_interaction())
+    _invoke(cog.sanity_omdb, cog, _fake_interaction())
 
     assert bot.media.calls == []
     assert bot.storage.bulk_calls == []
@@ -167,7 +167,7 @@ def test_backfill_omdb_misses_are_not_written():
     movies = [_movie(1, title="typoed title", year=2000, omdb_data=None)]
     cog, bot = _make_cog(movies, {})  # empty table → fetch_metadata returns None
 
-    _invoke(cog.backfill_omdb, cog, _fake_interaction())
+    _invoke(cog.sanity_omdb, cog, _fake_interaction())
 
     assert bot.storage.bulk_calls == []
 
@@ -182,7 +182,7 @@ def test_backfill_omdb_batches_all_writes_into_one_bulk_call():
         (f"t{i}", 2020): {"Genre": "Drama"} for i in range(1, 6)
     })
 
-    _invoke(cog.backfill_omdb, cog, _fake_interaction())
+    _invoke(cog.sanity_omdb, cog, _fake_interaction())
 
     assert len(bot.storage.bulk_calls) == 1
     assert set(bot.storage.bulk_calls[0].keys()) == {1, 2, 3, 4, 5}
@@ -192,19 +192,19 @@ def test_backfill_omdb_no_candidates_noop():
     movies = [_movie(1, omdb_data={"Title": "X"})]  # already populated
     cog, bot = _make_cog(movies, {})
 
-    _invoke(cog.backfill_omdb, cog, _fake_interaction())
+    _invoke(cog.sanity_omdb, cog, _fake_interaction())
 
     assert bot.storage.bulk_calls == []
     assert bot.media.calls == []
 
 
-# ── /backfill tags ──────────────────────────────────────────────────────────
+# ── /sanity tags ────────────────────────────────────────────────────────────
 
 def test_backfill_tags_retags_movies_with_omdb_but_no_tags():
     movies = [_movie(1, omdb_data={"Genre": "Drama, Action"}, tags=empty_tags())]
     cog, bot = _make_cog(movies)
 
-    _invoke(cog.backfill_tags_cmd, cog, _fake_interaction())
+    _invoke(cog.sanity_tags, cog, _fake_interaction())
 
     assert len(bot.storage.bulk_calls) == 1
     patch = bot.storage.bulk_calls[0][1]
@@ -218,7 +218,7 @@ def test_backfill_tags_preserves_existing_tags():
     movies = [_movie(1, omdb_data={"Genre": "Drama"}, tags=tags)]
     cog, bot = _make_cog(movies)
 
-    _invoke(cog.backfill_tags_cmd, cog, _fake_interaction())
+    _invoke(cog.sanity_tags, cog, _fake_interaction())
 
     # Skipped — row already has tags.
     assert bot.storage.bulk_calls == []
@@ -228,7 +228,7 @@ def test_backfill_tags_skips_active_without_omdb():
     movies = [_movie(1, omdb_data=None, tags=empty_tags())]  # no omdb_data
     cog, bot = _make_cog(movies)
 
-    _invoke(cog.backfill_tags_cmd, cog, _fake_interaction())
+    _invoke(cog.sanity_tags, cog, _fake_interaction())
 
     assert bot.storage.bulk_calls == []
 
@@ -240,7 +240,7 @@ def test_backfill_tags_skips_historical_movies():
     ]
     cog, bot = _make_cog(movies)
 
-    _invoke(cog.backfill_tags_cmd, cog, _fake_interaction())
+    _invoke(cog.sanity_tags, cog, _fake_interaction())
 
     assert bot.storage.bulk_calls == []
 
@@ -250,7 +250,7 @@ def test_backfill_tags_tracks_no_mapping_cases():
     movies = [_movie(1, omdb_data={"Genre": "Game-Show"}, tags=empty_tags())]
     cog, bot = _make_cog(movies)
 
-    _invoke(cog.backfill_tags_cmd, cog, _fake_interaction())
+    _invoke(cog.sanity_tags, cog, _fake_interaction())
 
     # "Game-Show" isn't in _OMDB_GENRE_TO_TAGS — no update written.
     assert bot.storage.bulk_calls == []
@@ -263,7 +263,26 @@ def test_backfill_tags_batches_writes_into_one_bulk_call():
     ]
     cog, bot = _make_cog(movies)
 
-    _invoke(cog.backfill_tags_cmd, cog, _fake_interaction())
+    _invoke(cog.sanity_tags, cog, _fake_interaction())
 
     assert len(bot.storage.bulk_calls) == 1
     assert set(bot.storage.bulk_calls[0].keys()) == {1, 2, 3}
+
+
+def test_backfill_tags_report_shows_genre_for_no_mapping_rows():
+    """No-mapping report must name the offending Genre so the operator can decide."""
+    movies = [
+        _movie(1, omdb_data={"Genre": "Game-Show"}, tags=empty_tags()),
+        _movie(2, omdb_data={"Genre": "Talk-Show"}, tags=empty_tags()),
+    ]
+    cog, bot = _make_cog(movies)
+
+    interaction = _fake_interaction()
+    _invoke(cog.sanity_tags, cog, interaction)
+
+    # The response body is the first positional arg to followup.send.
+    assert interaction.followup.send.await_count == 1
+    body = interaction.followup.send.await_args.args[0]
+    assert "Game-Show" in body
+    assert "Talk-Show" in body
+    assert "id=1" in body and "id=2" in body

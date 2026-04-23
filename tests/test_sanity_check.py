@@ -691,6 +691,47 @@ def test_counts_dict_tracks_multiple_categories():
     assert report.counts.get("missing_omdb_data") == 1
 
 
+# ── Backfill candidate preview (powers /sanity test section) ────────────────
+
+def test_omdb_backfill_candidates_reported():
+    """Active + no omdb_data + has year → appears in omdb_backfill_candidates."""
+    s = FakeStorage()
+    # Unique titles so step 3 dedup doesn't collapse them before the flag pass.
+    s.movies[5] = _movie(5, title="Target",   status=MovieStatus.STASH,   omdb_data=None)
+    s.movies[6] = _movie(6, title="Historic", status=MovieStatus.WATCHED, omdb_data=None)  # historical
+    s.movies[7] = _movie(7, title="NoYear",   status=MovieStatus.STASH, year=0, omdb_data=None)  # no year
+    s.movies[8] = _movie(8, title="Has",      status=MovieStatus.STASH, omdb_data={"Title": "X"})  # has data
+
+    report = _run(s)
+
+    assert report.omdb_backfill_candidates == [5]
+
+
+def test_tag_backfill_candidates_excludes_no_mapping_rows():
+    """Active + has omdb + no tags — but only listed if Genre maps to our 8."""
+    s = FakeStorage()
+    # Would retag (Drama maps).
+    s.movies[1] = _movie(1, title="Mappable", omdb_data={"Genre": "Drama"}, tags=empty_tags())
+    # Has OMDB but Genre doesn't map — NOT a candidate (/sanity tags would no-op on it).
+    s.movies[2] = _movie(2, title="GameShow", omdb_data={"Genre": "Game-Show"}, tags=empty_tags())
+    # Already tagged — not a candidate.
+    tagged = empty_tags()
+    tagged["drama"] = True
+    s.movies[3] = _movie(3, title="Tagged", omdb_data={"Genre": "Drama"}, tags=tagged)
+
+    report = _run(s)
+
+    assert report.tag_backfill_candidates == [1]
+
+
+def test_backfill_candidates_empty_on_clean_sheet():
+    s = FakeStorage()
+    s.movies[1] = _movie(1, omdb_data={"Title": "X", "Poster": "http://p", "Genre": "Drama"})
+    report = _run(s)
+    assert report.omdb_backfill_candidates == []
+    assert report.tag_backfill_candidates == []
+
+
 # ── No-op ────────────────────────────────────────────────────────────────────
 
 def test_empty_storage_no_fixes_no_issues():
@@ -700,3 +741,5 @@ def test_empty_storage_no_fixes_no_issues():
     assert report.issues == []
     assert report.gap_weeks == []
     assert report.counts == {}
+    assert report.omdb_backfill_candidates == []
+    assert report.tag_backfill_candidates == []
