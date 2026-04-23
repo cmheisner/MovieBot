@@ -43,6 +43,10 @@ class SanityReport:
     fixes: list[str] = field(default_factory=list)
     issues: list[str] = field(default_factory=list)
     gap_weeks: list[date] = field(default_factory=list)
+    # Structured counts for summary-mode rendering. Keys correspond to the
+    # aggregated bullet types emitted into `issues`. Zero-valued entries are
+    # omitted so the summary formatter only prints categories with matches.
+    counts: dict[str, int] = field(default_factory=dict)
 
 
 def _trust_score(m: Movie) -> tuple[int, int, int]:
@@ -74,7 +78,6 @@ def _find_gap_weeks(entries_asc: list) -> list[date]:
 async def run_sanity_check(
     storage: StorageProvider,
     dry_run: bool = False,
-    verbose: bool = False,
 ) -> SanityReport:
     """Audit the backing store, auto-fix what's safely fixable, and return
     a structured report of remaining issues and schedule gap weeks.
@@ -83,8 +86,9 @@ async def run_sanity_check(
     be fixed. Local bookkeeping still advances so cascading steps report
     accurately.
 
-    verbose=True: flag-only checks also cover WATCHED / SKIPPED movies.
-    Default behavior silences dismissed-movie issues.
+    The active-status filter (STASH/NOMINATED/SCHEDULED) is always applied
+    to field-completeness checks — dismissed movies (WATCHED/SKIPPED) are
+    considered historical and intentionally not flagged.
     """
     report = SanityReport()
 
@@ -315,6 +319,13 @@ async def run_sanity_check(
     # ── Flag-only checks: re-fetch to get the post-fix state ─────────────
     final_movies = await storage.list_movies(status="all")
 
+    # Collect every flagged id into a structured bucket. Aggregated bullets
+    # (one per category) are built afterward so output stays scannable even
+    # when a sheet has 100+ movies missing the same field.
+    missing_year: list[int] = []
+    invalid_status: list[int] = []
+    missing_season: list[int] = []
+    missing_tags: list[int] = []
     missing_omdb: list[int] = []
     missing_poster: list[int] = []
     tag_drift: list[str] = []
@@ -324,11 +335,9 @@ async def run_sanity_check(
 
     for m in final_movies:
         if not m.year:
-            report.issues.append(f"Movie id={m.id} ({m.title!r}) has no year.")
+            missing_year.append(m.id)
         if m.status not in VALID_STATUSES:
-            report.issues.append(
-                f"Movie id={m.id} ({m.title!r}) has unrecognized status {m.status!r}."
-            )
+            invalid_status.append(m.id)
         if not m.added_at:
             missing_added_at.append(m.id)
         if not m.added_by_id:
@@ -337,14 +346,15 @@ async def run_sanity_check(
         if m.season and m.season not in VALID_SEASONS:
             bad_season.append(f"id={m.id} ({m.season!r})")
 
-        # Active-only checks (unless verbose).
-        if m.status not in _ACTIVE_STATUSES and not verbose:
+        # Active-only checks — historical movies (WATCHED/SKIPPED) don't get
+        # flagged for missing fields.
+        if m.status not in _ACTIVE_STATUSES:
             continue
 
         if not (m.season or "").strip():
-            report.issues.append(f"Movie id={m.id} ({m.display_title}) has no season set.")
+            missing_season.append(m.id)
         if not any(m.tags.get(t) for t in TAG_NAMES):
-            report.issues.append(f"Movie id={m.id} ({m.display_title}) has no genre tags.")
+            missing_tags.append(m.id)
         if not m.omdb_data:
             missing_omdb.append(m.id)
         elif m.omdb_data.get("Poster") in (None, "", "N/A"):
@@ -358,32 +368,25 @@ async def run_sanity_check(
                 diff_tags = [t for t in TAG_NAMES if computed.get(t) != current.get(t)]
                 tag_drift.append(f"id={m.id} ({diff_tags})")
 
-    # Aggregate the new flag lists into summary bullets. One bullet per class
-    # of issue, with ids inline. Keeps output scannable on large sheets.
-    if missing_omdb:
-        report.issues.append(
-            f"{len(missing_omdb)} active movie(s) missing omdb_data: ids={missing_omdb}"
-        )
-    if missing_poster:
-        report.issues.append(
-            f"{len(missing_poster)} active movie(s) have no poster (Poster=N/A): ids={missing_poster}"
-        )
-    if tag_drift:
-        report.issues.append(
-            f"{len(tag_drift)} movie(s) have tag/OMDB drift: {tag_drift}"
-        )
-    if bad_season:
-        report.issues.append(
-            f"{len(bad_season)} movie(s) have invalid season values: {bad_season}"
-        )
-    if missing_added_at:
-        report.issues.append(
-            f"{len(missing_added_at)} movie(s) missing added_at: ids={missing_added_at}"
-        )
-    if missing_added_by_id:
-        report.issues.append(
-            f"{len(missing_added_by_id)} movie(s) missing added_by_id: ids={missing_added_by_id}"
-        )
+    # Build aggregated bullets + counts dict. One bullet per category keeps
+    # the detail view scannable; counts give summary mode the aggregates
+    # without string parsing.
+    _categories: list[tuple[str, list, str]] = [
+        ("missing_year", missing_year, "movie(s) missing year: ids={ids}"),
+        ("invalid_status", invalid_status, "movie(s) with unrecognized status: ids={ids}"),
+        ("missing_season", missing_season, "active movie(s) missing season: ids={ids}"),
+        ("missing_tags", missing_tags, "active movie(s) missing genre tags: ids={ids}"),
+        ("missing_omdb_data", missing_omdb, "active movie(s) missing omdb_data: ids={ids}"),
+        ("missing_poster", missing_poster, "active movie(s) have no poster (Poster=N/A): ids={ids}"),
+        ("tag_drift", tag_drift, "movie(s) with tag/OMDB drift: {ids}"),
+        ("invalid_season", bad_season, "movie(s) with invalid season values: {ids}"),
+        ("missing_added_at", missing_added_at, "movie(s) missing added_at: ids={ids}"),
+        ("missing_added_by_id", missing_added_by_id, "movie(s) missing added_by_id: ids={ids}"),
+    ]
+    for name, bucket, template in _categories:
+        if bucket:
+            report.counts[name] = len(bucket)
+            report.issues.append(f"{len(bucket)} {template.format(ids=bucket)}")
 
     # ── Gap-week detection on the final schedule state ──────────────────
     entries_asc = sorted(

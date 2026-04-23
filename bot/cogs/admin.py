@@ -180,31 +180,53 @@ class AdminCog(commands.Cog, name="Admin"):
                 f"⚠️ Could not attach log file: {exc}", ephemeral=True
             )
 
-    # ── /sanity ───────────────────────────────────────────────────────────
+    # ── /sanity {summary|test|clean} ──────────────────────────────────────
 
-    @app_commands.command(
+    sanity = app_commands.Group(
         name="sanity",
-        description="[Admin] Audit the spreadsheet, auto-fix what's safe, list the rest for human review.",
+        description="[Admin] Audit the spreadsheet for data health.",
     )
-    @app_commands.describe(
-        dry_run="Preview fixes without writing to the sheet (default false).",
-        verbose="Also flag issues on WATCHED / SKIPPED movies (default false).",
+
+    @sanity.command(
+        name="summary",
+        description="[Admin] Dry-run health check — counts only, no detail, no writes.",
     )
     @app_commands.checks.has_permissions(manage_guild=True)
-    async def sanity(
+    async def sanity_summary(self, interaction: discord.Interaction) -> None:
+        await self._run_sanity(interaction, dry_run=True, detail=False)
+
+    @sanity.command(
+        name="test",
+        description="[Admin] Dry-run with full detail — preview fixes without writing.",
+    )
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def sanity_test(self, interaction: discord.Interaction) -> None:
+        await self._run_sanity(interaction, dry_run=True, detail=True)
+
+    @sanity.command(
+        name="clean",
+        description="[Admin] Live run — auto-fix what's safe, write to the sheet, full detail.",
+    )
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def sanity_clean(self, interaction: discord.Interaction) -> None:
+        await self._run_sanity(interaction, dry_run=False, detail=True)
+
+    async def _run_sanity(
         self,
         interaction: discord.Interaction,
-        dry_run: bool = False,
-        verbose: bool = False,
+        *,
+        dry_run: bool,
+        detail: bool,
     ) -> None:
+        mode = "summary" if not detail else ("test" if dry_run else "clean")
         log.info(
-            "Sanity check requested by %s (id=%d, dry_run=%s, verbose=%s).",
-            interaction.user, interaction.user.id, dry_run, verbose,
+            "Sanity %s requested by %s (id=%d).",
+            mode, interaction.user, interaction.user.id,
         )
         await interaction.response.defer(ephemeral=True)
 
         try:
-            report = await run_sanity_check(self.bot.storage, dry_run=dry_run, verbose=verbose)
+            report = await run_sanity_check(self.bot.storage, dry_run=dry_run)
         except Exception as exc:
             log.exception("Sanity check failed.")
             await interaction.followup.send(f"⚠️ Sanity check failed: {exc}", ephemeral=True)
@@ -214,42 +236,29 @@ class AdminCog(commands.Cog, name="Admin"):
         issue_count = len(report.issues)
         gap_count = len(report.gap_weeks)
         log.info(
-            "Sanity check complete — %d %s, %d flagged, %d gap weeks.",
-            fix_count, "would-fix" if dry_run else "fixed", issue_count, gap_count,
+            "Sanity %s complete — %d %s, %d flagged, %d gap weeks.",
+            mode, fix_count, "would-fix" if dry_run else "fixed", issue_count, gap_count,
         )
 
-        fix_header = "Would auto-fix" if dry_run else "Auto-fixed"
-        parts = [f"**{fix_header} ({fix_count}):**"]
-        if report.fixes:
-            parts.extend(f"• {line}" for line in report.fixes)
-        else:
-            parts.append("• _(nothing)_")
-        parts.append("")
-        parts.append(f"**Needs human attention ({issue_count}):**")
-        if report.issues:
-            parts.extend(f"• {line}" for line in report.issues)
-        else:
-            parts.append("• _(all clear)_")
-        parts.append("")
-        parts.append(f"**Schedule gap weeks ({gap_count}):**")
-        if report.gap_weeks:
-            parts.extend(f"• Week of {wk.strftime('%b %d, %Y')}" for wk in report.gap_weeks)
-        else:
-            parts.append("• _(no gaps)_")
-        body = "\n".join(parts)
-
-        summary = (
-            f"Sanity report — {fix_count} {fix_header.lower()}, "
-            f"{issue_count} flagged, {gap_count} gap weeks"
+        body = (
+            _format_summary(report, dry_run=dry_run)
+            if not detail
+            else _format_detail(report, dry_run=dry_run)
         )
+
         if len(body) <= _SANITY_INLINE_CHAR_LIMIT:
             await interaction.followup.send(body, ephemeral=True)
             return
 
         buf = io.BytesIO(body.encode("utf-8"))
+        header = (
+            f"Sanity {mode} — {fix_count} "
+            f"{'would-fix' if dry_run else 'auto-fixed'}, "
+            f"{issue_count} flagged, {gap_count} gap weeks (attached)."
+        )
         await interaction.followup.send(
-            f"{summary} (attached).",
-            file=discord.File(buf, filename="sanity.txt"),
+            header,
+            file=discord.File(buf, filename=f"sanity_{mode}.txt"),
             ephemeral=True,
         )
 
@@ -280,6 +289,62 @@ class AdminCog(commands.Cog, name="Admin"):
                 await interaction.response.send_message(msg, ephemeral=True)
         except discord.HTTPException:
             pass
+
+
+_COUNT_LABELS: dict[str, str] = {
+    "missing_year": "missing year",
+    "invalid_status": "unrecognized status",
+    "missing_season": "active movies missing season",
+    "missing_tags": "active movies missing genre tags",
+    "missing_omdb_data": "active movies missing omdb_data",
+    "missing_poster": "active movies with no poster (N/A)",
+    "tag_drift": "movies with tag/OMDB drift",
+    "invalid_season": "movies with invalid season values",
+    "missing_added_at": "movies missing added_at",
+    "missing_added_by_id": "movies missing added_by_id",
+}
+
+
+def _format_summary(report, *, dry_run: bool) -> str:
+    fix_word = "would-fix" if dry_run else "auto-fixed"
+    lines = [
+        "**Sanity summary**" + (" (dry-run)" if dry_run else ""),
+        f"• **{len(report.fixes)}** {fix_word}",
+        f"• **{len(report.issues)}** flagged, broken down by category:",
+    ]
+    if report.counts:
+        for key, label in _COUNT_LABELS.items():
+            n = report.counts.get(key, 0)
+            if n:
+                lines.append(f"  – {n} {label}")
+    else:
+        lines.append("  – _(nothing flagged)_")
+    lines.append(f"• **{len(report.gap_weeks)}** schedule gap week(s)")
+    lines.append("")
+    lines.append("_Run `/sanity test` for full detail, `/sanity clean` to apply fixes._")
+    return "\n".join(lines)
+
+
+def _format_detail(report, *, dry_run: bool) -> str:
+    fix_header = "Would auto-fix" if dry_run else "Auto-fixed"
+    parts = [f"**{fix_header} ({len(report.fixes)}):**"]
+    if report.fixes:
+        parts.extend(f"• {line}" for line in report.fixes)
+    else:
+        parts.append("• _(nothing)_")
+    parts.append("")
+    parts.append(f"**Needs human attention ({len(report.issues)}):**")
+    if report.issues:
+        parts.extend(f"• {line}" for line in report.issues)
+    else:
+        parts.append("• _(all clear)_")
+    parts.append("")
+    parts.append(f"**Schedule gap weeks ({len(report.gap_weeks)}):**")
+    if report.gap_weeks:
+        parts.extend(f"• Week of {wk.strftime('%b %d, %Y')}" for wk in report.gap_weeks)
+    else:
+        parts.append("• _(no gaps)_")
+    return "\n".join(parts)
 
 
 async def setup(bot: commands.Bot) -> None:

@@ -400,7 +400,7 @@ def test_flag_missing_year():
 
     report = _run(s)
 
-    assert any("has no year" in i for i in report.issues)
+    assert report.counts.get("missing_year") == 1
 
 
 def test_flag_invalid_status():
@@ -409,7 +409,7 @@ def test_flag_invalid_status():
 
     report = _run(s)
 
-    assert any("unrecognized status" in i for i in report.issues)
+    assert report.counts.get("invalid_status") == 1
 
 
 def test_flag_active_movie_missing_season():
@@ -418,7 +418,7 @@ def test_flag_active_movie_missing_season():
 
     report = _run(s)
 
-    assert any("no season" in i for i in report.issues)
+    assert report.counts.get("missing_season") == 1
 
 
 def test_flag_active_movie_missing_tags():
@@ -428,7 +428,7 @@ def test_flag_active_movie_missing_tags():
 
     report = _run(s)
 
-    assert any("no genre tags" in i for i in report.issues)
+    assert report.counts.get("missing_tags") == 1
 
 
 def test_flag_skipped_movie_issues_silenced():
@@ -438,8 +438,8 @@ def test_flag_skipped_movie_issues_silenced():
 
     report = _run(s)
 
-    assert not any("no season" in i for i in report.issues)
-    assert not any("no genre tags" in i for i in report.issues)
+    assert "missing_season" not in report.counts
+    assert "missing_tags" not in report.counts
 
 
 def test_flag_watched_movie_issues_silenced():
@@ -448,8 +448,8 @@ def test_flag_watched_movie_issues_silenced():
 
     report = _run(s)
 
-    assert not any("no season" in i for i in report.issues)
-    assert not any("no genre tags" in i for i in report.issues)
+    assert "missing_season" not in report.counts
+    assert "missing_tags" not in report.counts
 
 
 # ── Dry-run semantics ────────────────────────────────────────────────────────
@@ -486,22 +486,6 @@ def test_dry_run_produces_same_fix_count_as_live_run():
     live = _run(_build(), dry_run=False)
 
     assert len(dry.fixes) == len(live.fixes)
-
-
-# ── Verbose mode ─────────────────────────────────────────────────────────────
-
-def test_verbose_mode_includes_dismissed_movies():
-    """verbose=True: season/tag flags fire on WATCHED and SKIPPED movies too."""
-    s = FakeStorage()
-    s.movies[5] = _movie(5, status=MovieStatus.WATCHED, season=None, tags=empty_tags())
-    s.movies[6] = _movie(6, status=MovieStatus.SKIPPED, season=None, tags=empty_tags())
-
-    report = _run(s, dry_run=False)
-    assert not any("id=5" in i and "no season" in i for i in report.issues)
-
-    report_verbose = asyncio.run(run_sanity_check(s, dry_run=True, verbose=True))
-    assert any("id=5" in i and "no season" in i for i in report_verbose.issues)
-    assert any("id=6" in i and "no season" in i for i in report_verbose.issues)
 
 
 # ── Step 3 tag recompute + batching ──────────────────────────────────────────
@@ -675,6 +659,38 @@ def test_flag_missing_added_by_id():
     assert any("missing added_by_id" in i for i in report.issues)
 
 
+# ── counts dict (powers /sanity summary) ────────────────────────────────────
+
+def test_counts_dict_excludes_zero_categories():
+    """Summary mode iterates counts; zero-valued categories must not appear."""
+    s = FakeStorage()
+    # Fully populated: omdb_data present with a poster and a matching tag.
+    s.movies[5] = _movie(5, omdb_data={"Title": "X", "Poster": "http://p", "Genre": "Drama"})
+    report = _run(s)
+    assert report.counts == {}
+
+
+def test_counts_dict_matches_issues_length():
+    """Every key in counts corresponds to exactly one aggregated bullet in issues."""
+    s = FakeStorage()
+    s.movies[5] = _movie(5, status=MovieStatus.STASH, season=None, tags=empty_tags(), omdb_data=None)
+    report = _run(s)
+    # Each non-zero count corresponds to one emitted issue bullet.
+    assert len(report.issues) == len(report.counts)
+
+
+def test_counts_dict_tracks_multiple_categories():
+    """One movie can contribute to several counts simultaneously."""
+    s = FakeStorage()
+    # STASH with no season, no tags, no omdb — hits 3 active-movie categories.
+    s.movies[5] = _movie(5, status=MovieStatus.STASH, season=None,
+                         tags=empty_tags(), omdb_data=None)
+    report = _run(s)
+    assert report.counts.get("missing_season") == 1
+    assert report.counts.get("missing_tags") == 1
+    assert report.counts.get("missing_omdb_data") == 1
+
+
 # ── No-op ────────────────────────────────────────────────────────────────────
 
 def test_empty_storage_no_fixes_no_issues():
@@ -683,3 +699,4 @@ def test_empty_storage_no_fixes_no_issues():
     assert report.fixes == []
     assert report.issues == []
     assert report.gap_weeks == []
+    assert report.counts == {}
