@@ -4,20 +4,20 @@ import logging
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 
-from bot.constants import MOVIE_NIGHT_HOUR, MOVIE_NIGHT_MINUTE, TZ_EASTERN
+from bot.constants import (
+    MOVIE_NIGHT_HOUR,
+    MOVIE_NIGHT_MINUTE,
+    MOVIE_NIGHT_WEEKDAYS,
+    TZ_EASTERN,
+)
 from bot.models.movie import Movie, MovieStatus, TAG_NAMES
 from bot.models.poll import PollStatus
 from bot.providers.storage.base import StorageProvider
 from bot.utils.tags import tags_from_omdb
 from bot.utils.time_utils import week_monday
 
-# Movie nights fall on Wednesday (weekday 2) or Thursday (weekday 3) at
-# MOVIE_NIGHT_HOUR:MOVIE_NIGHT_MINUTE Eastern. Entries outside this grid
-# get flagged by the schedule sanity checks below.
-_MOVIE_NIGHT_WEEKDAYS = {2, 3}
-
 # Conflict window for duplicate-date detection — matches the conflict
-# window /schedule add and /schedule reschedule enforce.
+# window /schedule add and /schedule move enforce.
 _DUPLICATE_DATE_WINDOW_SECONDS = 12 * 60 * 60  # 12 hours
 
 # Anything more than a year out is likely a typo.
@@ -72,18 +72,29 @@ def _trust_score(m: Movie) -> tuple[int, int, int]:
     return (status_rank, completeness, -m.id)
 
 
-def _find_gap_weeks(entries_asc: list) -> list[date]:
-    """Return Mondays of every empty week between the first and last scheduled week."""
+def _find_gap_weeks(entries_asc: list, today: date | None = None) -> list[date]:
+    """Return Mondays of empty weeks between the first and last scheduled week,
+    limited to weeks whose Monday is today or later (past gaps are not
+    actionable and just clutter the report).
+
+    A week is considered "has entries" if ANY of its Wed/Thu slots are
+    booked — so a week with only a Wed movie is NOT a gap.
+    """
     valid = [e for e in entries_asc if e.scheduled_for is not None]
     if not valid:
         return []
     weeks_with_entries = {week_monday(e.scheduled_for) for e in valid}
     first = min(weeks_with_entries)
     last = max(weeks_with_entries)
+
+    if today is None:
+        today = datetime.now(TZ_EASTERN).date()
+    today_monday = today - timedelta(days=today.weekday())
+
     gaps: list[date] = []
     cur = first + timedelta(days=7)
     while cur <= last:
-        if cur not in weeks_with_entries:
+        if cur not in weeks_with_entries and cur >= today_monday:
             gaps.append(cur)
         cur += timedelta(days=7)
     return gaps
@@ -442,7 +453,7 @@ async def run_sanity_check(
     for entry in dated:
         et = entry.scheduled_for.astimezone(TZ_EASTERN)
         if (
-            et.weekday() not in _MOVIE_NIGHT_WEEKDAYS
+            et.weekday() not in MOVIE_NIGHT_WEEKDAYS
             or et.hour != MOVIE_NIGHT_HOUR
             or et.minute != MOVIE_NIGHT_MINUTE
         ):

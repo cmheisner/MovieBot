@@ -554,10 +554,11 @@ def test_step3_batches_all_writes_into_two_bulk_calls():
 
 def test_gap_weeks_detected_between_scheduled_entries():
     s = FakeStorage()
-    # One movie per present entry, so no dedup collapses them.
+    # One movie per present entry, so no dedup collapses them. Use a future
+    # base so the gaps aren't excluded by the today-filter.
     s.movies[1] = _movie(1, title="First")
     s.movies[2] = _movie(2, title="Second")
-    base = datetime(2026, 4, 1, 22, 30, tzinfo=timezone.utc)  # Wed
+    base = _movie_night(offset_days=7, weekday=2)  # next Wed, future
     # Schedule week 1 and week 4 — weeks 2 and 3 are gaps.
     s.schedule_entries[1] = _schedule_entry(1, 1, scheduled_for=base)
     s.schedule_entries[2] = _schedule_entry(2, 2, scheduled_for=base + timedelta(days=21))
@@ -584,6 +585,49 @@ def test_no_gap_weeks_when_schedule_empty():
     s = FakeStorage()
     report = _run(s)
     assert report.gap_weeks == []
+
+
+def test_gap_weeks_skips_past_weeks():
+    """Weeks whose Monday is before today's Monday should never be flagged."""
+    s = FakeStorage()
+    s.movies[1] = _movie(1, title="Past")
+    s.movies[2] = _movie(2, title="Future")
+    # A movie 30 days in the past and one 30 days in the future.
+    now_utc = datetime.now(timezone.utc)
+    s.schedule_entries[1] = _schedule_entry(1, 1, scheduled_for=now_utc - timedelta(days=30))
+    s.schedule_entries[2] = _schedule_entry(2, 2, scheduled_for=now_utc + timedelta(days=30))
+
+    report = _run(s)
+
+    # Without filtering, ~8 weekly gaps would span the 60-day range. With
+    # the today-filter, only future-or-current gaps should remain.
+    from bot.constants import TZ_EASTERN
+    today_monday = (datetime.now(TZ_EASTERN).date()
+                    - timedelta(days=datetime.now(TZ_EASTERN).date().weekday()))
+    for gap in report.gap_weeks:
+        assert gap >= today_monday, f"gap {gap} is before today's monday {today_monday}"
+
+
+def test_gap_weeks_week_with_only_wednesday_is_not_a_gap():
+    """Locks in: a week with Wed scheduled (but no Thu) is NOT a gap."""
+    s = FakeStorage()
+    s.movies[1] = _movie(1, title="WedOnly")
+    s.movies[2] = _movie(2, title="LaterWeek")
+    # Future Wednesday, and another movie 3 weeks later. The middle weeks
+    # (with nothing at all) ARE gaps; the first week (with only Wed) is NOT.
+    base = _movie_night(offset_days=14, weekday=2)  # 2 weeks out, Wednesday
+    s.schedule_entries[1] = _schedule_entry(1, 1, scheduled_for=base)
+    s.schedule_entries[2] = _schedule_entry(2, 2, scheduled_for=base + timedelta(days=21))
+
+    report = _run(s)
+
+    wed_week_monday = base.astimezone(
+        __import__("bot.constants", fromlist=["TZ_EASTERN"]).TZ_EASTERN
+    ).date() - timedelta(days=base.astimezone(
+        __import__("bot.constants", fromlist=["TZ_EASTERN"]).TZ_EASTERN
+    ).weekday())
+    # The Wed-only week must not appear in gap_weeks.
+    assert wed_week_monday not in report.gap_weeks
 
 
 # ── Extended flag-only checks ────────────────────────────────────────────────
