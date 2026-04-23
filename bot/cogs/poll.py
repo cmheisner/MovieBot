@@ -210,14 +210,9 @@ class PollCog(commands.Cog, name="Poll"):
 
     # ── /poll list ────────────────────────────────────────────────────────
 
-    @poll.command(name="list", description="[Staff] Show current vote tallies for the open poll.")
+    @poll.command(name="list", description="Show current vote tallies for the open poll.")
     async def poll_list(self, interaction: discord.Interaction):
-        await interaction.response.defer()
-        if not user_has_staff_role(interaction.user, self.bot.config.staff_role_id):
-            await interaction.followup.send(
-                "⛔ Only members with the **Staff** role can use poll commands.", ephemeral=True
-            )
-            return
+        await interaction.response.defer(ephemeral=True)
         poll = await self.bot.storage.get_latest_open_poll()
         if not poll:
             await interaction.followup.send("⚠️ No open poll found.", ephemeral=True)
@@ -247,7 +242,7 @@ class PollCog(commands.Cog, name="Poll"):
             description=description,
             color=discord.Color.gold(),
         )
-        await interaction.followup.send(embed=embed)
+        await interaction.followup.send(embed=embed, ephemeral=True)
 
     # ── /poll close ───────────────────────────────────────────────────────
 

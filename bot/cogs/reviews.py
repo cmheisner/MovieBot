@@ -1,6 +1,5 @@
 from __future__ import annotations
 import logging
-from datetime import datetime
 from typing import Optional
 
 import discord
@@ -8,8 +7,7 @@ from discord import app_commands
 from discord.ext import commands
 from gspread.exceptions import APIError
 
-from bot.constants import TZ_EASTERN
-from bot.models.movie import Movie, MovieStatus
+from bot.models.movie import MovieStatus
 from bot.providers.media.imdb_reviews import fetch_reviews, _make_slug
 from bot.utils.movie_lookup import autocomplete_movies, resolve_movie_by_id
 
@@ -141,18 +139,16 @@ class ReviewsCog(commands.Cog, name="Reviews"):
             imdb_id = m.omdb_data.get("imdbID") if m.omdb_data else None
             return m.title, m.year, imdb_id
 
-        today_eastern = datetime.now(TZ_EASTERN).date()
+        # upcoming_only already filters to scheduled_for >= now, so tonight's
+        # movie is included right up until showtime — which is when /reviews is
+        # most likely to be used.
         all_entries = await self.bot.storage.list_schedule_entries(upcoming_only=True, limit=50)
-        future = [
-            e for e in all_entries
-            if e.scheduled_for.astimezone(TZ_EASTERN).date() > today_eastern
-        ]
-        future.sort(key=lambda e: e.scheduled_for)
-        if not future:
+        all_entries.sort(key=lambda e: e.scheduled_for)
+        if not all_entries:
             await interaction.followup.send("⚠️ No upcoming scheduled movies found.", ephemeral=True)
             return None
 
-        movie = await self.bot.storage.get_movie(future[0].movie_id)
+        movie = await self.bot.storage.get_movie(all_entries[0].movie_id)
         if not movie:
             await interaction.followup.send("⚠️ Could not find the scheduled movie.", ephemeral=True)
             return None

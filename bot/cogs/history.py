@@ -23,7 +23,7 @@ class HistoryCog(commands.Cog, name="History"):
 
     @watched.command(name="list", description="List movies that have been watched.")
     async def watched_list(self, interaction: discord.Interaction):
-        await interaction.response.defer()
+        await interaction.response.defer(ephemeral=True)
         movies = await self.bot.storage.list_movies(status=MovieStatus.WATCHED)
 
         watch_dates: dict[int, object] = {}
@@ -39,17 +39,17 @@ class HistoryCog(commands.Cog, name="History"):
         movies.sort(key=lambda m: watch_dates.get(m.id) or m.added_at, reverse=True)
 
         embeds = stash_list_embeds(movies, status_label="Watched", watch_dates=watch_dates)
-        await interaction.followup.send(embeds=embeds)
+        await interaction.followup.send(embeds=embeds, ephemeral=True)
 
     # ── /skipped list ────────────────────────────────────────────────────
 
     @skipped.command(name="list", description="List movies that were skipped or removed from the stash.")
     async def skipped_list(self, interaction: discord.Interaction):
-        await interaction.response.defer()
+        await interaction.response.defer(ephemeral=True)
         movies = await self.bot.storage.list_movies(status=MovieStatus.SKIPPED)
         movies.sort(key=lambda m: m.added_at, reverse=True)
         embeds = stash_list_embeds(movies, status_label="Skipped")
-        await interaction.followup.send(embeds=embeds)
+        await interaction.followup.send(embeds=embeds, ephemeral=True)
 
     # ── Error handler ─────────────────────────────────────────────────────
 

@@ -55,7 +55,7 @@ class MovieSelectView(discord.ui.View):
         self.add_item(select)
 
     async def on_select(self, interaction: discord.Interaction):
-        await interaction.response.defer()
+        await interaction.response.defer(ephemeral=True)
         raw_title, raw_year = interaction.data["values"][0].rsplit("|", 1)
         try:
             year = int(raw_year[:4])
@@ -83,7 +83,19 @@ class MovieSelectView(discord.ui.View):
             return
 
         embed = movie_card(movie, title_prefix="✅ Added to stash: ")
-        await interaction.edit_original_response(content=None, embed=embed, view=None)
+        # Collapse the ephemeral dropdown into a private ack.
+        await interaction.edit_original_response(
+            content=f"✅ Added **{movie.display_title}** — posted to channel.",
+            embed=None,
+            view=None,
+        )
+        # Broadcast the card publicly so the group sees who added what.
+        channel = self.original_interaction.channel
+        if channel is not None:
+            await channel.send(embed=embed)
+        # Cancel the view's 60s timeout; otherwise on_timeout fires later and
+        # overwrites the ephemeral ack with "Timed out — no movie selected."
+        self.stop()
         maintenance = self.bot.get_cog("Maintenance")
         if maintenance:
             await maintenance._run_refresh_stash_channel()
@@ -119,6 +131,8 @@ class StashCog(commands.Cog, name="Stash"):
         season: str,
         notes: str | None = None,
     ):
+        # Defer ephemeral so OMDB search errors and the "pick one" dropdown stay
+        # private. On success we post the card publicly via channel.send.
         await interaction.response.defer(ephemeral=True)
 
         results = await self.bot.media.search_titles(title)
@@ -159,7 +173,11 @@ class StashCog(commands.Cog, name="Stash"):
             return
 
         embed = movie_card(movie, title_prefix="✅ Added to stash: ")
-        await interaction.followup.send(embed=embed, ephemeral=True)
+        if interaction.channel is not None:
+            await interaction.channel.send(embed=embed)
+        await interaction.followup.send(
+            f"✅ Added **{movie.display_title}** — posted to channel.", ephemeral=True
+        )
         maintenance = self.bot.get_cog("Maintenance")
         if maintenance:
             await maintenance._run_refresh_stash_channel()
@@ -168,19 +186,40 @@ class StashCog(commands.Cog, name="Stash"):
 
     @stash.command(name="list", description="List movies currently in the stash.")
     async def stash_list(self, interaction: discord.Interaction):
-        await interaction.response.defer()
+        await interaction.response.defer(ephemeral=True)
         movies = await self.bot.storage.list_movies(status=MovieStatus.STASH)
         plex_availability = {}
         for m in movies:
             plex_availability[m.id] = await self.bot.plex.check_movie(m.title)
         embeds = stash_list_embeds(movies, status_label="Stash", plex_availability=plex_availability)
-        await interaction.followup.send(embeds=embeds)
+        await interaction.followup.send(embeds=embeds, ephemeral=True)
+
+    # ── /stash search ─────────────────────────────────────────────────────
+
+    @stash.command(name="search", description="Look up a movie in the stash.")
+    @app_commands.describe(movie="Movie to look up (start typing to search the stash)")
+    async def stash_search(self, interaction: discord.Interaction, movie: str):
+        await interaction.response.defer(ephemeral=True)
+        m = await resolve_movie_by_id(self.bot.storage, interaction, movie)
+        if not m:
+            return
+        on_plex = await self.bot.plex.check_movie(m.title)
+        embed = movie_card(m, on_plex=on_plex)
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+    @stash_search.autocomplete("movie")
+    async def _stash_search_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> list[app_commands.Choice[str]]:
+        return await autocomplete_movies(interaction, current, [MovieStatus.STASH])
 
     # ── /stash remove ─────────────────────────────────────────────────────
 
     @stash.command(name="remove", description="Remove a movie from the stash.")
     @app_commands.describe(movie="Movie to remove (start typing to search the stash)")
     async def stash_remove(self, interaction: discord.Interaction, movie: str):
+        # Defer ephemeral so autocomplete-resolution errors and the permission
+        # gate stay private. Success is broadcast publicly via channel.send.
         await interaction.response.defer(ephemeral=True)
         m = await resolve_movie_by_id(self.bot.storage, interaction, movie)
         if not m:
@@ -200,7 +239,12 @@ class StashCog(commands.Cog, name="Stash"):
             return
 
         await self.bot.storage.update_movie(m.id, status=MovieStatus.SKIPPED)
-        await interaction.followup.send(f"🗑️ **{m.display_title}** removed from the stash.", ephemeral=True)
+        public_msg = f"🗑️ **{m.display_title}** removed from the stash."
+        if interaction.channel is not None:
+            await interaction.channel.send(public_msg)
+        await interaction.followup.send(
+            f"✅ Removed **{m.display_title}** — posted to channel.", ephemeral=True
+        )
         maintenance = self.bot.get_cog("Maintenance")
         if maintenance:
             await maintenance._run_refresh_stash_channel()

@@ -24,6 +24,7 @@ class HelpCog(commands.Cog, name="Help"):
             value=(
                 "`/stash list` — List movies currently in the stash\n"
                 "`/stash add` — Add a movie (season required; genres auto-tagged from OMDB)\n"
+                "`/stash search` — Look up a movie in the stash\n"
                 "`/stash remove` — Remove a movie from the stash"
             ),
             inline=False,
@@ -36,8 +37,7 @@ class HelpCog(commands.Cog, name="Help"):
                 "`/schedule add` — Schedule a stash or skipped movie\n"
                 "`/schedule remove` — Remove a scheduled movie (returns to stash)\n"
                 "`/schedule reschedule` — Move a scheduled movie to a new date\n"
-                "`/schedule calendar` — Show the calendar for a given month/year\n"
-                "`/schedule fix` — Detect gap weeks and cascade future entries back"
+                "`/schedule calendar` — Show the calendar for a given month/year"
             ),
             inline=False,
         )

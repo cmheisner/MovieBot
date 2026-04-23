@@ -62,7 +62,7 @@ class ScheduleCog(commands.Cog, name="Schedule"):
 
     @schedule.command(name="list", description="Show upcoming scheduled movies.")
     async def schedule_list(self, interaction: discord.Interaction):
-        await interaction.response.defer()
+        await interaction.response.defer(ephemeral=True)
         entries = await self.bot.storage.list_schedule_entries(upcoming_only=True, limit=500)
         movies_by_id = {}
         for e in entries:
@@ -71,7 +71,7 @@ class ScheduleCog(commands.Cog, name="Schedule"):
                 movies_by_id[e.movie_id] = m
         plex_availability = await _plex_map(self.bot.plex, list(movies_by_id.values()))
         embeds = schedule_embeds(entries, movies_by_id, plex_availability)
-        await interaction.followup.send(embeds=embeds)
+        await interaction.followup.send(embeds=embeds, ephemeral=True)
 
     # ── /schedule add ─────────────────────────────────────────────────────
 
@@ -139,6 +139,8 @@ class ScheduleCog(commands.Cog, name="Schedule"):
     @schedule.command(name="remove", description="Remove a scheduled movie and return it to the stash.")
     @app_commands.describe(movie="Scheduled movie to remove (start typing to search the schedule)")
     async def schedule_remove(self, interaction: discord.Interaction, movie: str):
+        # Defer ephemeral so autocomplete-resolution errors stay private.
+        # Success is broadcast publicly via channel.send.
         await interaction.response.defer(ephemeral=True)
         m = await resolve_movie_by_id(self.bot.storage, interaction, movie)
         if not m:
@@ -160,9 +162,11 @@ class ScheduleCog(commands.Cog, name="Schedule"):
 
         await self.bot.storage.delete_schedule_entry(entry.id)
         await self.bot.storage.update_movie(m.id, status=MovieStatus.STASH)
+        public_msg = f"🗑️ **{m.display_title}** removed from the schedule and returned to the stash."
+        if interaction.channel is not None:
+            await interaction.channel.send(public_msg)
         await interaction.followup.send(
-            f"🗑️ **{m.display_title}** removed from the schedule and returned to the stash.",
-            ephemeral=True,
+            f"✅ Removed **{m.display_title}** — posted to channel.", ephemeral=True
         )
 
     @schedule_remove.autocomplete("movie")
