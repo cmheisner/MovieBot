@@ -188,37 +188,28 @@ class AdminCog(commands.Cog, name="Admin"):
     )
 
     @sanity.command(
-        name="summary",
-        description="[Admin] Dry-run health check — counts only, no detail, no writes.",
-    )
-    @app_commands.checks.has_permissions(manage_guild=True)
-    async def sanity_summary(self, interaction: discord.Interaction) -> None:
-        await self._run_sanity(interaction, dry_run=True, detail=False)
-
-    @sanity.command(
         name="test",
-        description="[Admin] Dry-run with full detail — preview fixes without writing.",
+        description="[Admin] Dry-run — preview fixes and flagged issues without writing.",
     )
     @app_commands.checks.has_permissions(manage_guild=True)
     async def sanity_test(self, interaction: discord.Interaction) -> None:
-        await self._run_sanity(interaction, dry_run=True, detail=True)
+        await self._run_sanity(interaction, dry_run=True)
 
     @sanity.command(
         name="clean",
-        description="[Admin] Live run — auto-fix what's safe, write to the sheet, full detail.",
+        description="[Admin] Live run — auto-fix what's safe, write to the sheet.",
     )
     @app_commands.checks.has_permissions(manage_guild=True)
     async def sanity_clean(self, interaction: discord.Interaction) -> None:
-        await self._run_sanity(interaction, dry_run=False, detail=True)
+        await self._run_sanity(interaction, dry_run=False)
 
     async def _run_sanity(
         self,
         interaction: discord.Interaction,
         *,
         dry_run: bool,
-        detail: bool,
     ) -> None:
-        mode = "summary" if not detail else ("test" if dry_run else "clean")
+        mode = "test" if dry_run else "clean"
         log.info(
             "Sanity %s requested by %s (id=%d).",
             mode, interaction.user, interaction.user.id,
@@ -240,11 +231,7 @@ class AdminCog(commands.Cog, name="Admin"):
             mode, fix_count, "would-fix" if dry_run else "fixed", issue_count, gap_count,
         )
 
-        body = (
-            _format_summary(report, dry_run=dry_run)
-            if not detail
-            else _format_detail(report, dry_run=dry_run)
-        )
+        body = _format_detail(report, dry_run=dry_run)
 
         if len(body) <= _SANITY_INLINE_CHAR_LIMIT:
             await interaction.followup.send(body, ephemeral=True)
@@ -289,40 +276,6 @@ class AdminCog(commands.Cog, name="Admin"):
                 await interaction.response.send_message(msg, ephemeral=True)
         except discord.HTTPException:
             pass
-
-
-_COUNT_LABELS: dict[str, str] = {
-    "missing_year": "missing year",
-    "invalid_status": "unrecognized status",
-    "missing_season": "active movies missing season",
-    "missing_tags": "active movies missing genre tags",
-    "missing_omdb_data": "active movies missing omdb_data",
-    "missing_poster": "active movies with no poster (N/A)",
-    "tag_drift": "movies with tag/OMDB drift",
-    "invalid_season": "movies with invalid season values",
-    "missing_added_at": "movies missing added_at",
-    "missing_added_by_id": "movies missing added_by_id",
-}
-
-
-def _format_summary(report, *, dry_run: bool) -> str:
-    fix_word = "would-fix" if dry_run else "auto-fixed"
-    lines = [
-        "**Sanity summary**" + (" (dry-run)" if dry_run else ""),
-        f"• **{len(report.fixes)}** {fix_word}",
-        f"• **{len(report.issues)}** flagged, broken down by category:",
-    ]
-    if report.counts:
-        for key, label in _COUNT_LABELS.items():
-            n = report.counts.get(key, 0)
-            if n:
-                lines.append(f"  – {n} {label}")
-    else:
-        lines.append("  – _(nothing flagged)_")
-    lines.append(f"• **{len(report.gap_weeks)}** schedule gap week(s)")
-    lines.append("")
-    lines.append("_Run `/sanity test` for full detail, `/sanity clean` to apply fixes._")
-    return "\n".join(lines)
 
 
 def _format_detail(report, *, dry_run: bool) -> str:
