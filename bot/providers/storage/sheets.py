@@ -356,17 +356,52 @@ class GoogleSheetsStorageProvider(StorageProvider):
             rows = _retry_call(ws.get_all_values)[1:]
             title_col = self._cols["movies"].get("title")
             year_col = self._cols["movies"].get("year")
+            id_col = self._cols["movies"].get("id", 0)
+            status_col = self._cols["movies"].get("status")
             if title_col is not None and year_col is not None:
-                for r in rows:
-                    if (
+                # rows[0] is sheet row 2 (row 1 is the header).
+                for sheet_row, r in enumerate(rows, start=2):
+                    if not (
                         title_col < len(r)
                         and year_col < len(r)
                         and r[title_col].lower() == title.lower()
                         and r[year_col] == str(year)
                     ):
-                        raise ValueError(
-                            f"{title!r} ({year}) is already in the stash (id={r[self._cols['movies']['id']]})."
-                        )
+                        continue
+                    existing_id = r[id_col]
+                    existing_status = (
+                        r[status_col].lower()
+                        if status_col is not None and status_col < len(r)
+                        else ""
+                    )
+                    if existing_status == MovieStatus.SKIPPED:
+                        # Resurrect the SKIPPED row in place: new adder takes
+                        # ownership, season/notes/tags/omdb get refreshed from
+                        # the current call, status resets to STASH (or caller's
+                        # override). Preserves id and sheet position.
+                        now = _now_iso()
+                        tag_vals = tags or empty_tags()
+                        updates = {
+                            "notes": notes,
+                            "added_by": added_by,
+                            "added_by_id": added_by_id,
+                            "added_at": now,
+                            "status": status or MovieStatus.STASH,
+                            "omdb_data": omdb_data,
+                            "season": season,
+                        }
+                        for name in TAG_NAMES:
+                            updates[name] = tag_vals.get(name, False)
+                        for field_name, value in updates.items():
+                            col = self._col_idx("movies", field_name)
+                            if col is None:
+                                continue
+                            _retry_call(ws.update_cell, sheet_row, col, _to_str(value))
+                        self._cache.drop("movies")
+                        return int(existing_id)
+                    raise ValueError(
+                        f"{title!r} ({year}) already exists (id={existing_id}, status={existing_status})."
+                    )
             new_id = self._next_id("movies", rows)
             now = _now_iso()
             tag_vals = tags or empty_tags()

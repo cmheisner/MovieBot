@@ -9,7 +9,7 @@ from gspread.exceptions import APIError
 
 from bot.models.movie import MovieStatus
 from bot.utils.embeds import movie_card, stash_list_embeds
-from bot.utils.movie_lookup import autocomplete_movies, resolve_movie_by_id
+from bot.utils.movie_lookup import autocomplete_movies, parse_title_year, resolve_movie_by_id
 from bot.utils.tags import tags_from_omdb
 from bot.cogs.seasons import SEASON_CHOICES
 
@@ -135,6 +135,11 @@ class StashCog(commands.Cog, name="Stash"):
         # private. On success we post the card publicly via channel.send.
         await interaction.response.defer(ephemeral=True)
 
+        # Strip a trailing "(YYYY)" — users often paste display_title format.
+        # OMDB's fuzzy search chokes on that suffix; we search by bare title
+        # and prefer-match the year against returned results.
+        title, preferred_year = parse_title_year(title)
+
         results = await self.bot.media.search_titles(title)
         if not results:
             await interaction.followup.send(
@@ -142,6 +147,10 @@ class StashCog(commands.Cog, name="Stash"):
                 ephemeral=True,
             )
             return
+        if preferred_year is not None:
+            year_matches = [r for r in results if r.get("Year", "")[:4] == str(preferred_year)]
+            if year_matches:
+                results = year_matches
         if len(results) == 1:
             year = int(results[0]["Year"][:4])
             omdb_data = await self.bot.media.fetch_metadata(title, year)

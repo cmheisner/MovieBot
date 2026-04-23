@@ -10,6 +10,14 @@ from bot.models.movie import Movie, MovieStatus
 _YEAR_SUFFIX_RE = re.compile(r'^(.+?)\s*\((\d{4})\)\s*$')
 
 
+def parse_title_year(title: str) -> tuple[str, Optional[int]]:
+    """Split 'Forest Warrior (1996)' → ('Forest Warrior', 1996). Leaves unchanged if no year suffix."""
+    m = _YEAR_SUFFIX_RE.match(title)
+    if m:
+        return m.group(1).strip(), int(m.group(2))
+    return title, None
+
+
 async def resolve_movie(
     storage,
     interaction: discord.Interaction,
@@ -25,10 +33,10 @@ async def resolve_movie(
     """
     # If year not provided explicitly, check if it's embedded in the title string
     if year is None:
-        m = _YEAR_SUFFIX_RE.match(title)
-        if m:
-            title = m.group(1).strip()
-            year = int(m.group(2))
+        parsed_title, parsed_year = parse_title_year(title)
+        if parsed_year is not None:
+            title = parsed_title
+            year = parsed_year
 
     if year is not None:
         movie = await storage.get_movie_by_title_year(title, year)

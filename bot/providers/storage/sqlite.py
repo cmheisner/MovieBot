@@ -181,12 +181,29 @@ class SQLiteStorageProvider(StorageProvider):
         tags: Optional[dict[str, bool]] = None,
     ) -> Movie:
         existing = await self.get_movie_by_title_year(title, year)
-        if existing:
-            raise ValueError(f"{title!r} ({year}) is already in the stash (id={existing.id}).")
-
         omdb_json = json.dumps(omdb_data) if omdb_data else None
         now = _now_iso()
         insert_status = status or MovieStatus.STASH
+
+        if existing:
+            if existing.status == MovieStatus.SKIPPED:
+                # Resurrect in place: new adder takes ownership, metadata
+                # refreshes, status returns to STASH. Preserves id.
+                await self._db.execute(
+                    """
+                    UPDATE movies
+                    SET notes = ?, added_by = ?, added_by_id = ?, added_at = ?,
+                        status = ?, omdb_data = ?, season = ?
+                    WHERE id = ?
+                    """,
+                    (notes, added_by, added_by_id, now, insert_status, omdb_json, season, existing.id),
+                )
+                await self._db.commit()
+                return await self.get_movie(existing.id)
+            raise ValueError(
+                f"{title!r} ({year}) already exists (id={existing.id}, status={existing.status})."
+            )
+
         async with self._db.execute(
             """
             INSERT INTO movies (title, year, notes, apple_tv_url, image_url,
