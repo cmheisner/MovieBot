@@ -22,7 +22,15 @@
       "Read(//home/brandon/.ssh/**)",
       "Bash(.venv/bin/python -c \"from bot.utils import restart_notify; print\\(restart_notify.MARKER_PATH\\)\")",
       "Bash(venv/bin/python -c \"from bot.utils import restart_notify; print\\(restart_notify.MARKER_PATH\\)\")",
-      "Bash(pip install *)"
+      "Bash(pip install *)",
+      "Bash(grep -r \"pass$\" /mnt/d/Projects/MovieBot/bot --include=\"*.py\")",
+      "Bash(grep *)",
+      "Bash(apt list *)",
+      "Read(//mnt/c/Users/Brand/Downloads/**)",
+      "Bash(/mnt/d/Projects/MovieBot/venv/Scripts/python.exe --version)",
+      "Bash(/mnt/d/Projects/MovieBot/venv/Scripts/python.exe -c \"import pytest; print\\('pytest', pytest.__version__\\)\")",
+      "Bash(venv/Scripts/python.exe -m pip install pytest)",
+      "Bash(venv/Scripts/python.exe -m pytest tests/ -v)"
     ]
   }
 }
