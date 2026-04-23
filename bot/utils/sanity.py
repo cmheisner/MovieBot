@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 from bot.models.movie import Movie, MovieStatus, TAG_NAMES
+from bot.models.poll import PollStatus
 from bot.providers.storage.base import StorageProvider
+from bot.utils.tags import tags_from_omdb
+from bot.utils.time_utils import week_monday
 
 log = logging.getLogger(__name__)
 
@@ -17,6 +20,8 @@ VALID_STATUSES = {
     MovieStatus.SKIPPED,
 }
 
+VALID_SEASONS = {"Winter", "Spring", "Summer", "Fall"}
+
 # Used only to pick a winner when duplicates exist. Higher = more trusted.
 _STATUS_PRIORITY = {
     MovieStatus.SCHEDULED: 5,
@@ -27,7 +32,7 @@ _STATUS_PRIORITY = {
 }
 
 # Movies in these statuses are historical/dismissed — don't nag about
-# missing season or tags on them.
+# missing season or tags on them unless verbose=True.
 _ACTIVE_STATUSES = {MovieStatus.STASH, MovieStatus.NOMINATED, MovieStatus.SCHEDULED}
 
 _BACKFILL_FIELDS = ("notes", "apple_tv_url", "image_url", "omdb_data", "season")
@@ -37,6 +42,7 @@ _BACKFILL_FIELDS = ("notes", "apple_tv_url", "image_url", "omdb_data", "season")
 class SanityReport:
     fixes: list[str] = field(default_factory=list)
     issues: list[str] = field(default_factory=list)
+    gap_weeks: list[date] = field(default_factory=list)
 
 
 def _trust_score(m: Movie) -> tuple[int, int, int]:
@@ -48,20 +54,43 @@ def _trust_score(m: Movie) -> tuple[int, int, int]:
     return (status_rank, completeness, -m.id)
 
 
-async def run_sanity_check(storage: StorageProvider, dry_run: bool = False) -> SanityReport:
-    """Audit the backing store, auto-fix what's safely fixable, and return
-    a structured list of remaining issues for humans.
+def _find_gap_weeks(entries_asc: list) -> list[date]:
+    """Return Mondays of every empty week between the first and last scheduled week."""
+    valid = [e for e in entries_asc if e.scheduled_for is not None]
+    if not valid:
+        return []
+    weeks_with_entries = {week_monday(e.scheduled_for) for e in valid}
+    first = min(weeks_with_entries)
+    last = max(weeks_with_entries)
+    gaps: list[date] = []
+    cur = first + timedelta(days=7)
+    while cur <= last:
+        if cur not in weeks_with_entries:
+            gaps.append(cur)
+        cur += timedelta(days=7)
+    return gaps
 
-    When dry_run=True, no writes are issued; report.fixes describes what
-    *would* be fixed so callers can present a read-only diagnostic view.
-    Local bookkeeping still advances so cascading steps report accurately
-    (e.g. a movie "would-be skipped" in step 3 won't re-trigger in step 7).
+
+async def run_sanity_check(
+    storage: StorageProvider,
+    dry_run: bool = False,
+    verbose: bool = False,
+) -> SanityReport:
+    """Audit the backing store, auto-fix what's safely fixable, and return
+    a structured report of remaining issues and schedule gap weeks.
+
+    dry_run=True: no writes are issued; report.fixes describes what *would*
+    be fixed. Local bookkeeping still advances so cascading steps report
+    accurately.
+
+    verbose=True: flag-only checks also cover WATCHED / SKIPPED movies.
+    Default behavior silences dismissed-movie issues.
     """
     report = SanityReport()
 
     # ── Step 1: multiple open polls — keep the most recent, delete others ──
     polls = await storage.list_polls()
-    open_polls = [p for p in polls if p.status == "open"]
+    open_polls = [p for p in polls if p.status == PollStatus.OPEN]
     if len(open_polls) > 1:
         open_polls.sort(
             key=lambda p: p.created_at or datetime.min.replace(tzinfo=timezone.utc),
@@ -100,9 +129,9 @@ async def run_sanity_check(storage: StorageProvider, dry_run: bool = False) -> S
         key = (m.title.strip().lower(), m.year)
         groups.setdefault(key, []).append(m)
 
-    # Accumulate loser skip writes across every dedup group and flush in one
-    # bulk call after the loop. Winner backfills stay per-winner because they
-    # use the returned Movie object to refresh movies_by_id.
+    # Accumulate ALL writes in two buckets so step 3 flushes in 2 API calls
+    # total (winners + losers), regardless of how many dedup groups fire.
+    winner_updates: dict[int, dict] = {}
     skipped_losers: dict[int, dict] = {}
     for dupes in groups.values():
         live = [d for d in dupes if d.status != MovieStatus.SKIPPED]
@@ -112,37 +141,58 @@ async def run_sanity_check(storage: StorageProvider, dry_run: bool = False) -> S
         winner = live[0]
         losers = live[1:]
 
-        backfill = {}
+        winner_patch: dict = {}
         for field_name in _BACKFILL_FIELDS:
             if not getattr(winner, field_name):
                 for loser in losers:
                     val = getattr(loser, field_name)
                     if val:
-                        backfill[field_name] = val
+                        winner_patch[field_name] = val
                         break
-        if backfill and not dry_run:
-            updated = await storage.update_movie(winner.id, **backfill)
-            if updated:
-                movies_by_id[winner.id] = updated
+
+        # If we're handing the winner fresh omdb_data AND it has no tags set,
+        # recompute tags from that omdb data. Honor any existing tag edits.
+        winner_has_tags = any(winner.tags.get(t) for t in TAG_NAMES)
+        if "omdb_data" in winner_patch and not winner_has_tags:
+            computed = tags_from_omdb(winner_patch["omdb_data"])
+            if any(computed.values()):
+                winner_patch["tags"] = computed
+
+        if winner_patch:
+            winner_updates[winner.id] = winner_patch
+            # Mutate the in-memory copy so later steps see the new state.
+            for k, v in winner_patch.items():
+                if k == "tags":
+                    winner.tags = {**winner.tags, **v}
+                else:
+                    setattr(winner, k, v)
+            movies_by_id[winner.id] = winner
 
         for loser in losers:
             skipped_losers[loser.id] = {"status": MovieStatus.SKIPPED}
             loser.status = MovieStatus.SKIPPED
             movies_by_id[loser.id] = loser
 
-        backfill_note = f" (backfilled: {', '.join(backfill)})" if backfill else ""
+        backfill_note = (
+            f" (backfilled: {', '.join(k for k in winner_patch if k != 'tags')}"
+            f"{'; recomputed tags' if 'tags' in winner_patch else ''})"
+            if winner_patch else ""
+        )
         report.fixes.append(
             f"Dedup '{winner.title}' ({winner.year}): kept id={winner.id} "
             f"({winner.status}), skipped id(s)={[l.id for l in losers]}{backfill_note}."
         )
         log.info(
-            "Sanity: dedup %r (%d) — kept id=%d (%s), skipped %s, backfilled=%s",
+            "Sanity: dedup %r (%d) — kept id=%d (%s), skipped %s, patch=%s",
             winner.title, winner.year, winner.id, winner.status,
-            [l.id for l in losers], list(backfill),
+            [l.id for l in losers], list(winner_patch),
         )
 
-    if skipped_losers and not dry_run:
-        await storage.bulk_update_movies(skipped_losers)
+    if not dry_run:
+        if winner_updates:
+            await storage.bulk_update_movies(winner_updates)
+        if skipped_losers:
+            await storage.bulk_update_movies(skipped_losers)
 
     # ── Step 4: orphan schedule entries ─────────────────────────────────
     schedule_entries = await storage.list_schedule_entries(upcoming_only=False, limit=10000)
@@ -193,6 +243,7 @@ async def run_sanity_check(storage: StorageProvider, dry_run: bool = False) -> S
 
     # ── Step 6: schedule entries with no scheduled_for → revert & delete ─
     schedule_fresh = await storage.list_schedule_entries(upcoming_only=False, limit=10000)
+    step6_reverts: dict[int, dict] = {}
     for entry in schedule_fresh:
         if entry.scheduled_for is not None:
             continue
@@ -200,8 +251,7 @@ async def run_sanity_check(storage: StorageProvider, dry_run: bool = False) -> S
         if not dry_run:
             await storage.delete_schedule_entry(entry.id)
         if movie and movie.status == MovieStatus.SCHEDULED:
-            if not dry_run:
-                await storage.update_movie(movie.id, status=MovieStatus.STASH)
+            step6_reverts[movie.id] = {"status": MovieStatus.STASH}
             movie.status = MovieStatus.STASH
             movies_by_id[movie.id] = movie
             report.fixes.append(
@@ -215,6 +265,8 @@ async def run_sanity_check(storage: StorageProvider, dry_run: bool = False) -> S
         else:
             report.fixes.append(f"Deleted schedule entry id={entry.id} — no scheduled_for.")
             log.info("Sanity: deleted date-less schedule entry id=%d", entry.id)
+    if step6_reverts and not dry_run:
+        await storage.bulk_update_movies(step6_reverts)
 
     # ── Step 7: scheduled status with no schedule entry → stash ──────────
     schedule_final = await storage.list_schedule_entries(upcoming_only=False, limit=10000)
@@ -263,6 +315,13 @@ async def run_sanity_check(storage: StorageProvider, dry_run: bool = False) -> S
     # ── Flag-only checks: re-fetch to get the post-fix state ─────────────
     final_movies = await storage.list_movies(status="all")
 
+    missing_omdb: list[int] = []
+    missing_poster: list[int] = []
+    tag_drift: list[str] = []
+    bad_season: list[str] = []
+    missing_added_at: list[int] = []
+    missing_added_by_id: list[int] = []
+
     for m in final_movies:
         if not m.year:
             report.issues.append(f"Movie id={m.id} ({m.title!r}) has no year.")
@@ -270,11 +329,67 @@ async def run_sanity_check(storage: StorageProvider, dry_run: bool = False) -> S
             report.issues.append(
                 f"Movie id={m.id} ({m.title!r}) has unrecognized status {m.status!r}."
             )
-        if m.status not in _ACTIVE_STATUSES:
+        if not m.added_at:
+            missing_added_at.append(m.id)
+        if not m.added_by_id:
+            missing_added_by_id.append(m.id)
+        # Season validity: if present, must be one of the 4 canonical values.
+        if m.season and m.season not in VALID_SEASONS:
+            bad_season.append(f"id={m.id} ({m.season!r})")
+
+        # Active-only checks (unless verbose).
+        if m.status not in _ACTIVE_STATUSES and not verbose:
             continue
+
         if not (m.season or "").strip():
             report.issues.append(f"Movie id={m.id} ({m.display_title}) has no season set.")
         if not any(m.tags.get(t) for t in TAG_NAMES):
             report.issues.append(f"Movie id={m.id} ({m.display_title}) has no genre tags.")
+        if not m.omdb_data:
+            missing_omdb.append(m.id)
+        elif m.omdb_data.get("Poster") in (None, "", "N/A"):
+            missing_poster.append(m.id)
+
+        # Tag drift: OMDB says one thing, tag columns say another.
+        if m.omdb_data:
+            computed = tags_from_omdb(m.omdb_data)
+            current = {t: bool(m.tags.get(t)) for t in TAG_NAMES}
+            if any(computed.values()) and computed != current:
+                diff_tags = [t for t in TAG_NAMES if computed.get(t) != current.get(t)]
+                tag_drift.append(f"id={m.id} ({diff_tags})")
+
+    # Aggregate the new flag lists into summary bullets. One bullet per class
+    # of issue, with ids inline. Keeps output scannable on large sheets.
+    if missing_omdb:
+        report.issues.append(
+            f"{len(missing_omdb)} active movie(s) missing omdb_data: ids={missing_omdb}"
+        )
+    if missing_poster:
+        report.issues.append(
+            f"{len(missing_poster)} active movie(s) have no poster (Poster=N/A): ids={missing_poster}"
+        )
+    if tag_drift:
+        report.issues.append(
+            f"{len(tag_drift)} movie(s) have tag/OMDB drift: {tag_drift}"
+        )
+    if bad_season:
+        report.issues.append(
+            f"{len(bad_season)} movie(s) have invalid season values: {bad_season}"
+        )
+    if missing_added_at:
+        report.issues.append(
+            f"{len(missing_added_at)} movie(s) missing added_at: ids={missing_added_at}"
+        )
+    if missing_added_by_id:
+        report.issues.append(
+            f"{len(missing_added_by_id)} movie(s) missing added_by_id: ids={missing_added_by_id}"
+        )
+
+    # ── Gap-week detection on the final schedule state ──────────────────
+    entries_asc = sorted(
+        [e for e in schedule_final if e.scheduled_for is not None],
+        key=lambda e: e.scheduled_for,
+    )
+    report.gap_weeks = _find_gap_weeks(entries_asc)
 
     return report

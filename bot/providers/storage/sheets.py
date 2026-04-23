@@ -13,7 +13,7 @@ from gspread.utils import rowcol_to_a1
 from google.oauth2.service_account import Credentials
 
 from bot.models.movie import Movie, MovieStatus, TAG_NAMES, empty_tags
-from bot.models.poll import Poll, PollEntry
+from bot.models.poll import Poll, PollEntry, PollStatus
 from bot.models.schedule_entry import ScheduleEntry
 from bot.providers.storage.base import StorageProvider
 
@@ -310,7 +310,7 @@ class GoogleSheetsStorageProvider(StorageProvider):
             created_at=_parse_dt(self._get(r, "polls", "created_at")),
             closes_at=_parse_dt(self._get(r, "polls", "closes_at")),
             closed_at=_parse_dt(self._get(r, "polls", "closed_at")),
-            status=self._get(r, "polls", "status") or "open",
+            status=self._get(r, "polls", "status") or PollStatus.OPEN,
             entries=entries,
             target_date=_parse_dt(self._get(r, "polls", "target_date")),
         )
@@ -624,7 +624,7 @@ class GoogleSheetsStorageProvider(StorageProvider):
                 "created_at": now,
                 "closes_at": closes_at,
                 "closed_at": "",
-                "status": "open",
+                "status": PollStatus.OPEN,
                 "target_date": target_date,
             }
             _retry_call(ws_polls.append_row, self._pack_row("polls", poll_values), value_input_option="RAW")
@@ -676,7 +676,7 @@ class GoogleSheetsStorageProvider(StorageProvider):
                 return None
             open_polls = [
                 r for r in self._rows("polls")
-                if r and status_col < len(r) and r[status_col] == "open"
+                if r and status_col < len(r) and r[status_col] == PollStatus.OPEN
             ]
             if not open_polls:
                 return None
@@ -698,7 +698,7 @@ class GoogleSheetsStorageProvider(StorageProvider):
             status_col = self._col_idx("polls", "status")
             closed_col = self._col_idx("polls", "closed_at")
             if status_col:
-                _retry_call(ws.update_cell, row_idx, status_col, "closed")
+                _retry_call(ws.update_cell, row_idx, status_col, PollStatus.CLOSED)
             if closed_col:
                 _retry_call(ws.update_cell, row_idx, closed_col, _now_iso())
             self._cache.drop("polls")

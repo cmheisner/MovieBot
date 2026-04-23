@@ -10,7 +10,7 @@ from gspread.exceptions import APIError
 
 from bot.constants import NUMBER_EMOJI, MAX_POLL_OPTIONS, TZ_EASTERN, MOVIE_NIGHT_HOUR, MOVIE_NIGHT_MINUTE
 from bot.models.movie import Movie, MovieStatus
-from bot.models.poll import Poll, PollEntry
+from bot.models.poll import Poll, PollEntry, PollStatus
 from bot.utils.embeds import poll_embed
 from bot.utils.permissions import user_has_staff_role
 from bot.utils.time_utils import format_dt_eastern
@@ -296,7 +296,7 @@ class PollCog(commands.Cog, name="Poll"):
 
     async def _do_close_poll(self, poll: Poll, channel: Optional[discord.TextChannel]) -> str:
         """Close a poll, return ranked movies (descending) for copy-paste into /schedule add."""
-        if poll.status == "closed":
+        if poll.status == PollStatus.CLOSED:
             return f"ℹ️ Poll id={poll.id} was already closed."
 
         vote_counts, movies_by_id = await self._fetch_votes(poll)

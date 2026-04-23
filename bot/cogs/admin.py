@@ -4,7 +4,6 @@ import asyncio
 import io
 import logging
 import os
-from datetime import date, timedelta
 from typing import Optional
 
 import discord
@@ -16,7 +15,6 @@ from bot.constants import LOG_FILE_PATH
 from bot.utils.restart_notify import save_marker
 from bot.utils.runtime import git_short_sha
 from bot.utils.sanity import run_sanity_check
-from bot.utils.time_utils import week_monday
 
 log = logging.getLogger(__name__)
 
@@ -188,13 +186,25 @@ class AdminCog(commands.Cog, name="Admin"):
         name="sanity",
         description="[Admin] Audit the spreadsheet, auto-fix what's safe, list the rest for human review.",
     )
+    @app_commands.describe(
+        dry_run="Preview fixes without writing to the sheet (default false).",
+        verbose="Also flag issues on WATCHED / SKIPPED movies (default false).",
+    )
     @app_commands.checks.has_permissions(manage_guild=True)
-    async def sanity(self, interaction: discord.Interaction) -> None:
-        log.info("Sanity check requested by %s (id=%d).", interaction.user, interaction.user.id)
+    async def sanity(
+        self,
+        interaction: discord.Interaction,
+        dry_run: bool = False,
+        verbose: bool = False,
+    ) -> None:
+        log.info(
+            "Sanity check requested by %s (id=%d, dry_run=%s, verbose=%s).",
+            interaction.user, interaction.user.id, dry_run, verbose,
+        )
         await interaction.response.defer(ephemeral=True)
 
         try:
-            report = await run_sanity_check(self.bot.storage)
+            report = await run_sanity_check(self.bot.storage, dry_run=dry_run, verbose=verbose)
         except Exception as exc:
             log.exception("Sanity check failed.")
             await interaction.followup.send(f"⚠️ Sanity check failed: {exc}", ephemeral=True)
@@ -202,66 +212,14 @@ class AdminCog(commands.Cog, name="Admin"):
 
         fix_count = len(report.fixes)
         issue_count = len(report.issues)
-        log.info("Sanity check complete — %d fixed, %d flagged.", fix_count, issue_count)
-
-        parts = [f"**Auto-fixed ({fix_count}):**"]
-        if report.fixes:
-            parts.extend(f"• {line}" for line in report.fixes)
-        else:
-            parts.append("• _(nothing to fix)_")
-        parts.append("")
-        parts.append(f"**Needs human attention ({issue_count}):**")
-        if report.issues:
-            parts.extend(f"• {line}" for line in report.issues)
-        else:
-            parts.append("• _(all clear)_")
-        body = "\n".join(parts)
-
-        if len(body) <= _SANITY_INLINE_CHAR_LIMIT:
-            await interaction.followup.send(body, ephemeral=True)
-            return
-
-        buf = io.BytesIO(body.encode("utf-8"))
-        await interaction.followup.send(
-            f"Sanity report — {fix_count} fixed, {issue_count} flagged (attached).",
-            file=discord.File(buf, filename="sanity.txt"),
-            ephemeral=True,
-        )
-
-    # ── /debug ────────────────────────────────────────────────────────────
-
-    @app_commands.command(
-        name="debug",
-        description="[Admin] Read-only report of database + schedule problems. Makes no changes.",
-    )
-    @app_commands.checks.has_permissions(manage_guild=True)
-    async def debug(self, interaction: discord.Interaction) -> None:
-        log.info("Debug report requested by %s (id=%d).", interaction.user, interaction.user.id)
-        await interaction.response.defer(ephemeral=True)
-
-        try:
-            report = await run_sanity_check(self.bot.storage, dry_run=True)
-        except Exception as exc:
-            log.exception("Debug report failed.")
-            await interaction.followup.send(f"⚠️ Debug report failed: {exc}", ephemeral=True)
-            return
-
-        entries = await self.bot.storage.list_schedule_entries(upcoming_only=False, limit=500)
-        entries_asc = sorted(
-            (e for e in entries if e.scheduled_for is not None),
-            key=lambda e: e.scheduled_for,
-        )
-        gap_weeks = _find_all_gaps(entries_asc)
-
-        fix_count = len(report.fixes)
-        issue_count = len(report.issues)
-        gap_count = len(gap_weeks)
+        gap_count = len(report.gap_weeks)
         log.info(
-            "Debug report — %d would-fix, %d flagged, %d gap weeks.",
-            fix_count, issue_count, gap_count,
+            "Sanity check complete — %d %s, %d flagged, %d gap weeks.",
+            fix_count, "would-fix" if dry_run else "fixed", issue_count, gap_count,
         )
 
-        parts = [f"**Would auto-fix ({fix_count}):**"]
+        fix_header = "Would auto-fix" if dry_run else "Auto-fixed"
+        parts = [f"**{fix_header} ({fix_count}):**"]
         if report.fixes:
             parts.extend(f"• {line}" for line in report.fixes)
         else:
@@ -274,20 +232,24 @@ class AdminCog(commands.Cog, name="Admin"):
             parts.append("• _(all clear)_")
         parts.append("")
         parts.append(f"**Schedule gap weeks ({gap_count}):**")
-        if gap_weeks:
-            parts.extend(f"• Week of {wk.strftime('%b %d, %Y')}" for wk in gap_weeks)
+        if report.gap_weeks:
+            parts.extend(f"• Week of {wk.strftime('%b %d, %Y')}" for wk in report.gap_weeks)
         else:
             parts.append("• _(no gaps)_")
         body = "\n".join(parts)
 
+        summary = (
+            f"Sanity report — {fix_count} {fix_header.lower()}, "
+            f"{issue_count} flagged, {gap_count} gap weeks"
+        )
         if len(body) <= _SANITY_INLINE_CHAR_LIMIT:
             await interaction.followup.send(body, ephemeral=True)
             return
 
         buf = io.BytesIO(body.encode("utf-8"))
         await interaction.followup.send(
-            f"Debug report — {fix_count} would-fix, {issue_count} flagged, {gap_count} gap weeks (attached).",
-            file=discord.File(buf, filename="debug.txt"),
+            f"{summary} (attached).",
+            file=discord.File(buf, filename="sanity.txt"),
             ephemeral=True,
         )
 
@@ -318,22 +280,6 @@ class AdminCog(commands.Cog, name="Admin"):
                 await interaction.response.send_message(msg, ephemeral=True)
         except discord.HTTPException:
             pass
-
-
-def _find_all_gaps(entries_asc: list) -> list[date]:
-    """Return Mondays of every empty week between the first and last scheduled week."""
-    if not entries_asc:
-        return []
-    weeks_with_entries = {week_monday(e.scheduled_for) for e in entries_asc}
-    first = min(weeks_with_entries)
-    last = max(weeks_with_entries)
-    gaps: list[date] = []
-    cur = first + timedelta(days=7)
-    while cur <= last:
-        if cur not in weeks_with_entries:
-            gaps.append(cur)
-        cur += timedelta(days=7)
-    return gaps
 
 
 async def setup(bot: commands.Bot) -> None:
