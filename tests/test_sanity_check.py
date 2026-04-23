@@ -14,14 +14,14 @@ would force stubs for every abstractmethod that sanity never touches.
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import pytest
 
 from bot.models.movie import Movie, MovieStatus, empty_tags
 from bot.models.poll import Poll, PollEntry
 from bot.models.schedule_entry import ScheduleEntry
-from bot.utils.sanity import VALID_SEASONS, run_sanity_check
+from bot.utils.sanity import VALID_SEASONS, _find_gap_warnings, run_sanity_check
 
 
 # ── test scaffolding ────────────────────────────────────────────────────────
@@ -552,29 +552,13 @@ def test_step3_batches_all_writes_into_two_bulk_calls():
 
 # ── Gap-week detection ──────────────────────────────────────────────────────
 
-def test_gap_weeks_detected_between_scheduled_entries():
-    s = FakeStorage()
-    # One movie per present entry, so no dedup collapses them. Use a future
-    # base so the gaps aren't excluded by the today-filter.
-    s.movies[1] = _movie(1, title="First")
-    s.movies[2] = _movie(2, title="Second")
-    base = _movie_night(offset_days=7, weekday=2)  # next Wed, future
-    # Schedule week 1 and week 4 — weeks 2 and 3 are gaps.
-    s.schedule_entries[1] = _schedule_entry(1, 1, scheduled_for=base)
-    s.schedule_entries[2] = _schedule_entry(2, 2, scheduled_for=base + timedelta(days=21))
-
-    report = _run(s)
-
-    assert len(report.gap_weeks) == 2
-
-
 def test_no_gap_weeks_when_schedule_is_consecutive():
     s = FakeStorage()
     s.movies[1] = _movie(1, title="First")
     s.movies[2] = _movie(2, title="Second")
-    base = datetime(2026, 4, 1, 22, 30, tzinfo=timezone.utc)
+    base = _movie_night(offset_days=7, weekday=2)
     s.schedule_entries[1] = _schedule_entry(1, 1, scheduled_for=base)
-    s.schedule_entries[2] = _schedule_entry(2, 2, scheduled_for=base + timedelta(days=7))
+    s.schedule_entries[2] = _schedule_entry(2, 2, scheduled_for=base + timedelta(days=1))
 
     report = _run(s)
 
@@ -587,47 +571,105 @@ def test_no_gap_weeks_when_schedule_empty():
     assert report.gap_weeks == []
 
 
-def test_gap_weeks_skips_past_weeks():
-    """Weeks whose Monday is before today's Monday should never be flagged."""
-    s = FakeStorage()
-    s.movies[1] = _movie(1, title="Past")
-    s.movies[2] = _movie(2, title="Future")
-    # A movie 30 days in the past and one 30 days in the future.
-    now_utc = datetime.now(timezone.utc)
-    s.schedule_entries[1] = _schedule_entry(1, 1, scheduled_for=now_utc - timedelta(days=30))
-    s.schedule_entries[2] = _schedule_entry(2, 2, scheduled_for=now_utc + timedelta(days=30))
+# ── _find_gap_warnings direct unit tests (pure function, crafted inputs) ────
 
-    report = _run(s)
-
-    # Without filtering, ~8 weekly gaps would span the 60-day range. With
-    # the today-filter, only future-or-current gaps should remain.
+def _wed_thu_utc(year: int, month: int, wed_day: int) -> tuple[datetime, datetime]:
+    """Return (Wed 22:30 ET, Thu 22:30 ET) as UTC datetimes for a given week."""
     from bot.constants import TZ_EASTERN
-    today_monday = (datetime.now(TZ_EASTERN).date()
-                    - timedelta(days=datetime.now(TZ_EASTERN).date().weekday()))
-    for gap in report.gap_weeks:
-        assert gap >= today_monday, f"gap {gap} is before today's monday {today_monday}"
+    wed_et = datetime(year, month, wed_day, 22, 30, tzinfo=TZ_EASTERN)
+    thu_et = wed_et + timedelta(days=1)
+    return wed_et.astimezone(timezone.utc), thu_et.astimezone(timezone.utc)
 
 
-def test_gap_weeks_week_with_only_wednesday_is_not_a_gap():
-    """Locks in: a week with Wed scheduled (but no Thu) is NOT a gap."""
-    s = FakeStorage()
-    s.movies[1] = _movie(1, title="WedOnly")
-    s.movies[2] = _movie(2, title="LaterWeek")
-    # Future Wednesday, and another movie 3 weeks later. The middle weeks
-    # (with nothing at all) ARE gaps; the first week (with only Wed) is NOT.
-    base = _movie_night(offset_days=14, weekday=2)  # 2 weeks out, Wednesday
-    s.schedule_entries[1] = _schedule_entry(1, 1, scheduled_for=base)
-    s.schedule_entries[2] = _schedule_entry(2, 2, scheduled_for=base + timedelta(days=21))
+def test_gap_warning_error_symbol_for_full_empty_week():
+    """Both Wed and Thu missing → error, combined line."""
+    wed1, thu1 = _wed_thu_utc(2027, 6, 2)   # Wed Jun 2, Thu Jun 3, 2027
+    wed2, thu2 = _wed_thu_utc(2027, 6, 16)  # Wed Jun 16, Thu Jun 17, 2027
+    # Schedule both days of week 1 and both days of week 4; week 2 and 3 are empty.
+    entries = [
+        _schedule_entry(1, 1, scheduled_for=wed1),
+        _schedule_entry(2, 2, scheduled_for=thu1),
+        _schedule_entry(3, 3, scheduled_for=wed2),
+        _schedule_entry(4, 4, scheduled_for=thu2),
+    ]
+    warnings = _find_gap_warnings(entries, today=date(2027, 5, 1))
 
-    report = _run(s)
+    # Week 2 (Jun 9 + Jun 10) and no week 3 (only 14 days between wed1 and wed2).
+    # Actually Jun 2 → Jun 16 is 2 weeks; only one gap week between them (Jun 9+10).
+    assert len(warnings) == 1
+    assert "❌" in warnings[0]
+    assert "Jun 09" in warnings[0] and "Jun 10" in warnings[0]
+    assert "no movies this week" in warnings[0]
 
-    wed_week_monday = base.astimezone(
-        __import__("bot.constants", fromlist=["TZ_EASTERN"]).TZ_EASTERN
-    ).date() - timedelta(days=base.astimezone(
-        __import__("bot.constants", fromlist=["TZ_EASTERN"]).TZ_EASTERN
-    ).weekday())
-    # The Wed-only week must not appear in gap_weeks.
-    assert wed_week_monday not in report.gap_weeks
+
+def test_gap_warning_error_symbol_for_missing_wednesday_only():
+    """Wed missing but Thu scheduled → error, Wed-only line."""
+    _, thu = _wed_thu_utc(2027, 6, 2)
+    wed_next, thu_next = _wed_thu_utc(2027, 6, 9)
+    entries = [
+        _schedule_entry(1, 1, scheduled_for=thu),        # first week: Thu only
+        _schedule_entry(2, 2, scheduled_for=wed_next),   # next week: Wed
+        _schedule_entry(3, 3, scheduled_for=thu_next),   # next week: Thu
+    ]
+    warnings = _find_gap_warnings(entries, today=date(2027, 5, 1))
+
+    # First week is missing Wed (error).
+    assert len(warnings) == 1
+    assert "❌" in warnings[0]
+    assert "Wed Jun 02" in warnings[0]
+    assert "no Wednesday movie" in warnings[0]
+
+
+def test_gap_warning_warning_symbol_for_missing_thursday_only():
+    """Thu missing but Wed scheduled → warning, Thu-only line."""
+    wed, _ = _wed_thu_utc(2027, 6, 2)
+    wed_next, thu_next = _wed_thu_utc(2027, 6, 9)
+    entries = [
+        _schedule_entry(1, 1, scheduled_for=wed),        # first week: Wed only
+        _schedule_entry(2, 2, scheduled_for=wed_next),
+        _schedule_entry(3, 3, scheduled_for=thu_next),
+    ]
+    warnings = _find_gap_warnings(entries, today=date(2027, 5, 1))
+
+    assert len(warnings) == 1
+    assert "⚠️" in warnings[0]
+    assert "Thu Jun 03" in warnings[0]
+    assert "no Thursday movie" in warnings[0]
+
+
+def test_gap_warnings_skip_past_weeks():
+    """Past gaps aren't actionable; they're filtered out of the output."""
+    wed_past, thu_past = _wed_thu_utc(2027, 6, 2)   # past relative to test's "today"
+    wed_mid, thu_mid = _wed_thu_utc(2027, 6, 9)
+    wed_future, thu_future = _wed_thu_utc(2027, 7, 7)
+    # One in past week, one in mid week, one in far-future week. Gaps in
+    # between: past-ish Jun 9-10 week (after today), and Jun 16/23/30 weeks.
+    entries = [
+        _schedule_entry(1, 1, scheduled_for=wed_past),   # this week (today)
+        _schedule_entry(2, 2, scheduled_for=thu_past),
+        _schedule_entry(3, 3, scheduled_for=wed_future), # 5 weeks out
+    ]
+    warnings = _find_gap_warnings(entries, today=date(2027, 6, 2))
+
+    # Today is Wed Jun 2, 2027. Gap warnings in range:
+    #  - Jun 9, 16, 23, 30 weeks: all fully empty → 4 combined error lines
+    #  - Jul 7 week: Wed scheduled but Thu missing → 1 ⚠️ line
+    # Total: 5. None should reference May (past).
+    assert len(warnings) == 5
+    for w in warnings:
+        assert "May" not in w
+
+
+def test_gap_warnings_dont_fire_on_last_scheduled_week():
+    """Don't predict gaps beyond the last scheduled entry's week."""
+    wed, thu = _wed_thu_utc(2027, 6, 2)
+    entries = [
+        _schedule_entry(1, 1, scheduled_for=wed),
+        _schedule_entry(2, 2, scheduled_for=thu),
+    ]
+    warnings = _find_gap_warnings(entries, today=date(2027, 5, 1))
+    # Only one week of schedule; no gap weeks before OR after to iterate over.
+    assert warnings == []
 
 
 # ── Extended flag-only checks ────────────────────────────────────────────────
@@ -829,48 +871,86 @@ def test_schedule_flags_far_future_entries():
     assert report.counts.get("schedule_far_future") == 1
 
 
-# ── Backfill candidate preview (powers /sanity test section) ────────────────
+# ── OMDB + tag enrichment (what /sanity check auto-runs) ────────────────────
 
-def test_omdb_backfill_candidates_reported():
-    """Any status + no omdb_data + has year → appears in omdb_backfill_candidates.
-    Historical movies (WATCHED/SKIPPED) are now included for full-sheet cleanup.
-    """
+class FakeMedia:
+    def __init__(self, table: dict[tuple[str, int], dict]):
+        self._table = table
+        self.calls: list[tuple[str, int]] = []
+
+    async def fetch_metadata(self, title: str, year: int):
+        self.calls.append((title, year))
+        return self._table.get((title.lower(), year))
+
+
+def test_enrichment_fetches_omdb_and_derives_tags():
     s = FakeStorage()
-    # Unique titles so step 3 dedup doesn't collapse them before the flag pass.
-    s.movies[5] = _movie(5, title="Stash",    status=MovieStatus.STASH,   omdb_data=None)
-    s.movies[6] = _movie(6, title="Watched",  status=MovieStatus.WATCHED, omdb_data=None)
-    s.movies[7] = _movie(7, title="Skipped",  status=MovieStatus.SKIPPED, omdb_data=None)
-    s.movies[8] = _movie(8, title="NoYear",   status=MovieStatus.STASH, year=0, omdb_data=None)  # no year
-    s.movies[9] = _movie(9, title="Has",      status=MovieStatus.STASH, omdb_data={"Title": "X"})  # has data
+    s.movies[5] = _movie(5, title="Target", omdb_data=None, tags=empty_tags())
+    media = FakeMedia({("target", 2020): {"Genre": "Drama, Action"}})
 
-    report = _run(s)
+    report = asyncio.run(run_sanity_check(s, media=media, dry_run=False))
 
-    assert sorted(report.omdb_backfill_candidates) == [5, 6, 7]
+    assert s.movies[5].omdb_data is not None
+    assert s.movies[5].tags["drama"] is True
+    assert s.movies[5].tags["action"] is True
+    assert any("Fetched OMDB" in f for f in report.fixes)
 
 
-def test_tag_backfill_candidates_excludes_no_mapping_rows():
-    """Active + has omdb + no tags — but only listed if Genre maps to our 8."""
+def test_enrichment_tracks_omdb_misses():
     s = FakeStorage()
-    # Would retag (Drama maps).
-    s.movies[1] = _movie(1, title="Mappable", omdb_data={"Genre": "Drama"}, tags=empty_tags())
-    # Has OMDB but Genre doesn't map — NOT a candidate (/sanity tags would no-op on it).
-    s.movies[2] = _movie(2, title="GameShow", omdb_data={"Genre": "Game-Show"}, tags=empty_tags())
-    # Already tagged — not a candidate.
-    tagged = empty_tags()
-    tagged["drama"] = True
-    s.movies[3] = _movie(3, title="Tagged", omdb_data={"Genre": "Drama"}, tags=tagged)
+    s.movies[1] = _movie(1, title="Typoed Title", year=2000, omdb_data=None, tags=empty_tags())
+    media = FakeMedia({})  # empty table → miss
 
-    report = _run(s)
+    report = asyncio.run(run_sanity_check(s, media=media, dry_run=False))
 
-    assert report.tag_backfill_candidates == [1]
+    assert len(report.omdb_misses) == 1
+    assert "Typoed Title" in report.omdb_misses[0]
+    assert "2000" in report.omdb_misses[0]
 
 
-def test_backfill_candidates_empty_on_clean_sheet():
+def test_enrichment_strips_year_suffix_before_fetch():
     s = FakeStorage()
-    s.movies[1] = _movie(1, omdb_data={"Title": "X", "Poster": "http://p", "Genre": "Drama"})
-    report = _run(s)
-    assert report.omdb_backfill_candidates == []
-    assert report.tag_backfill_candidates == []
+    s.movies[1] = _movie(1, title="Foo (1996)", year=1996, omdb_data=None, tags=empty_tags())
+    media = FakeMedia({("foo", 1996): {"Genre": "Drama"}})
+
+    asyncio.run(run_sanity_check(s, media=media, dry_run=False))
+
+    assert media.calls == [("Foo", 1996)]
+
+
+def test_enrichment_preserves_designer_set_tags():
+    s = FakeStorage()
+    tags = empty_tags()
+    tags["horror"] = True
+    s.movies[1] = _movie(1, title="Has Tags", omdb_data=None, tags=tags)
+    media = FakeMedia({("has tags", 2020): {"Genre": "Drama, Action"}})
+
+    asyncio.run(run_sanity_check(s, media=media, dry_run=False))
+
+    assert s.movies[1].omdb_data is not None
+    assert s.movies[1].tags["horror"] is True
+    assert s.movies[1].tags["drama"] is False
+
+
+def test_enrichment_dry_run_makes_no_media_calls():
+    s = FakeStorage()
+    s.movies[1] = _movie(1, title="Target", omdb_data=None, tags=empty_tags())
+    media = FakeMedia({("target", 2020): {"Genre": "Drama"}})
+
+    asyncio.run(run_sanity_check(s, media=media, dry_run=True))
+
+    assert media.calls == []
+
+
+def test_enrichment_retags_existing_omdb_without_media_call():
+    """Rows with omdb_data but no tags get retagged even when media is None."""
+    s = FakeStorage()
+    s.movies[1] = _movie(1, title="Has OMDB", omdb_data={"Genre": "Drama"}, tags=empty_tags())
+
+    report = asyncio.run(run_sanity_check(s, media=None, dry_run=False))
+
+    assert s.movies[1].tags["drama"] is True
+    assert any("Recomputed genre tags" in f for f in report.fixes)
 
 
 # ── No-op ────────────────────────────────────────────────────────────────────
@@ -882,5 +962,4 @@ def test_empty_storage_no_fixes_no_issues():
     assert report.issues == []
     assert report.gap_weeks == []
     assert report.counts == {}
-    assert report.omdb_backfill_candidates == []
-    assert report.tag_backfill_candidates == []
+    assert report.omdb_misses == []

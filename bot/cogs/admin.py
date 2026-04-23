@@ -12,12 +12,9 @@ from discord.ext import commands
 from gspread.exceptions import APIError
 
 from bot.constants import LOG_FILE_PATH
-from bot.models.movie import TAG_NAMES
-from bot.utils.movie_lookup import parse_title_year
 from bot.utils.restart_notify import save_marker
 from bot.utils.runtime import git_short_sha
 from bot.utils.sanity import run_sanity_check
-from bot.utils.tags import tags_from_omdb
 
 log = logging.getLogger(__name__)
 
@@ -27,10 +24,6 @@ _DEV_STATE_CHOICES = [
 ]
 
 _SANITY_INLINE_CHAR_LIMIT = 1900
-
-# Gentle throttle between OMDB fetches. Free-tier allows 1000/day; a backfill
-# of ~100 rows is well under budget but we avoid hammering the endpoint.
-_OMDB_SLEEP_SECONDS = 0.1
 
 
 class AdminCog(commands.Cog, name="Admin"):
@@ -207,7 +200,9 @@ class AdminCog(commands.Cog, name="Admin"):
         await interaction.response.defer(ephemeral=True)
 
         try:
-            report = await run_sanity_check(self.bot.storage, dry_run=False)
+            report = await run_sanity_check(
+                self.bot.storage, media=self.bot.media, dry_run=False,
+            )
         except Exception as exc:
             log.exception("Sanity check failed.")
             await interaction.followup.send(f"⚠️ Sanity check failed: {exc}", ephemeral=True)
@@ -232,182 +227,6 @@ class AdminCog(commands.Cog, name="Admin"):
             f"Sanity check — {fix_count} auto-fixed, {issue_count} flagged, "
             f"{gap_count} gap weeks (attached).",
             file=discord.File(buf, filename="sanity_check.txt"),
-            ephemeral=True,
-        )
-
-    # ── /sanity omdb ─────────────────────────────────────────────────────
-
-    @sanity.command(
-        name="omdb",
-        description="[Admin] Fetch OMDB metadata for every movie missing it (all statuses).",
-    )
-    @app_commands.checks.has_permissions(manage_guild=True)
-    async def sanity_omdb(self, interaction: discord.Interaction) -> None:
-        log.info(
-            "Sanity omdb requested by %s (id=%d).",
-            interaction.user, interaction.user.id,
-        )
-        await interaction.response.defer(ephemeral=True)
-
-        try:
-            all_movies = await self.bot.storage.list_movies(status="all")
-        except Exception as exc:
-            log.exception("Sanity omdb: failed to list movies.")
-            await interaction.followup.send(f"⚠️ Could not list movies: {exc}", ephemeral=True)
-            return
-
-        targets = [
-            m for m in all_movies
-            if not m.omdb_data and m.year
-        ]
-        skipped_no_year = sum(
-            1 for m in all_movies
-            if not m.omdb_data and not m.year
-        )
-
-        updates: dict[int, dict] = {}
-        fetched: list[int] = []
-        tagged: list[int] = []
-        missed: list[tuple[int, str, int]] = []
-
-        for m in targets:
-            # Defensive title cleanup — strip trailing "(YYYY)" left over from
-            # old /stash add entries before the year-suffix fix.
-            cleaned_title, _ = parse_title_year(m.title)
-            try:
-                omdb = await self.bot.media.fetch_metadata(cleaned_title, m.year)
-            except Exception as exc:
-                log.warning("Sanity omdb: fetch failed for id=%d: %s", m.id, exc)
-                omdb = None
-            await asyncio.sleep(_OMDB_SLEEP_SECONDS)
-
-            if not omdb:
-                missed.append((m.id, cleaned_title, m.year))
-                continue
-
-            patch: dict = {"omdb_data": omdb}
-            if not any(m.tags.get(t) for t in TAG_NAMES):
-                computed = tags_from_omdb(omdb)
-                if any(computed.values()):
-                    patch["tags"] = computed
-                    tagged.append(m.id)
-            updates[m.id] = patch
-            fetched.append(m.id)
-
-        if updates:
-            try:
-                await self.bot.storage.bulk_update_movies(updates)
-            except Exception as exc:
-                log.exception("Sanity omdb: bulk update failed.")
-                await interaction.followup.send(
-                    f"⚠️ Fetched {len(fetched)} row(s) from OMDB but the sheet write failed: {exc}",
-                    ephemeral=True,
-                )
-                return
-
-        log.info(
-            "Sanity omdb complete — fetched=%d, tagged=%d, missed=%d, skipped_no_year=%d.",
-            len(fetched), len(tagged), len(missed), skipped_no_year,
-        )
-
-        parts = [
-            f"**OMDB backfill complete.**",
-            f"• Candidates (any status + missing omdb_data): **{len(targets) + skipped_no_year}**",
-            f"• Fetched + written: **{len(fetched)}**",
-            f"• Tags also recomputed: **{len(tagged)}**",
-            f"• OMDB miss (likely title typo): **{len(missed)}**",
-        ]
-        if skipped_no_year:
-            parts.append(f"• Skipped (no year on row): **{skipped_no_year}**")
-        if missed:
-            parts.append("")
-            parts.append("**Misses — fix titles manually in the sheet:**")
-            parts.extend(f"• id={mid} '{title}' ({year})" for mid, title, year in missed)
-
-        body = "\n".join(parts)
-        if len(body) <= _SANITY_INLINE_CHAR_LIMIT:
-            await interaction.followup.send(body, ephemeral=True)
-            return
-        buf = io.BytesIO(body.encode("utf-8"))
-        await interaction.followup.send(
-            f"Sanity omdb — {len(fetched)} fetched, {len(missed)} miss (attached).",
-            file=discord.File(buf, filename="sanity_omdb.txt"),
-            ephemeral=True,
-        )
-
-    # ── /sanity tags ─────────────────────────────────────────────────────
-
-    @sanity.command(
-        name="tags",
-        description="[Admin] Recompute genre tags for every movie that has omdb_data but no tags set.",
-    )
-    @app_commands.checks.has_permissions(manage_guild=True)
-    async def sanity_tags(self, interaction: discord.Interaction) -> None:
-        log.info(
-            "Sanity tags requested by %s (id=%d).",
-            interaction.user, interaction.user.id,
-        )
-        await interaction.response.defer(ephemeral=True)
-
-        try:
-            all_movies = await self.bot.storage.list_movies(status="all")
-        except Exception as exc:
-            log.exception("Sanity tags: failed to list movies.")
-            await interaction.followup.send(f"⚠️ Could not list movies: {exc}", ephemeral=True)
-            return
-
-        targets = [
-            m for m in all_movies
-            if m.omdb_data and not any(m.tags.get(t) for t in TAG_NAMES)
-        ]
-
-        updates: dict[int, dict] = {}
-        no_mapping: list[tuple[int, str]] = []  # (id, genre_string)
-        for m in targets:
-            computed = tags_from_omdb(m.omdb_data)
-            if any(computed.values()):
-                updates[m.id] = {"tags": computed}
-            else:
-                # Has omdb_data but OMDB's Genre didn't map to any of our 8 tags.
-                # Record Genre so the operator can decide: extend the mapping,
-                # set tags manually, or accept as legitimately untagged.
-                genre = (m.omdb_data or {}).get("Genre") or "—"
-                no_mapping.append((m.id, genre))
-
-        if updates:
-            try:
-                await self.bot.storage.bulk_update_movies(updates)
-            except Exception as exc:
-                log.exception("Sanity tags: bulk update failed.")
-                await interaction.followup.send(
-                    f"⚠️ Sheet write failed: {exc}", ephemeral=True,
-                )
-                return
-
-        log.info(
-            "Sanity tags complete — retagged=%d, no_mapping=%d.",
-            len(updates), len(no_mapping),
-        )
-
-        parts = [
-            f"**Tag backfill complete.**",
-            f"• Candidates (any status + has omdb + no tags): **{len(targets)}**",
-            f"• Retagged: **{len(updates)}**",
-            f"• Had omdb_data but no OMDB-to-tag mapping: **{len(no_mapping)}**",
-        ]
-        if no_mapping:
-            parts.append("")
-            parts.append("**No-mapping rows — OMDB Genre didn't match any of our 8 tags:**")
-            parts.extend(f"• id={mid} (Genre: {genre!r})" for mid, genre in no_mapping)
-
-        body = "\n".join(parts)
-        if len(body) <= _SANITY_INLINE_CHAR_LIMIT:
-            await interaction.followup.send(body, ephemeral=True)
-            return
-        buf = io.BytesIO(body.encode("utf-8"))
-        await interaction.followup.send(
-            f"Sanity tags — {len(updates)} retagged, {len(no_mapping)} no-mapping (attached).",
-            file=discord.File(buf, filename="sanity_tags.txt"),
             ephemeral=True,
         )
 
@@ -448,20 +267,11 @@ def _format_detail(report) -> str:
         parts.append("• _(nothing)_")
     parts.append("")
 
-    # Preview what the enrichment subcommands would do on the next run,
-    # so /sanity check tells you at a glance whether to run them.
-    omdb_candidates = report.omdb_backfill_candidates
-    tag_candidates = report.tag_backfill_candidates
-    if omdb_candidates or tag_candidates:
-        parts.append("**Could enrich via subcommands:**")
-        if omdb_candidates:
-            parts.append(
-                f"• `/sanity omdb` → {len(omdb_candidates)} row(s) (ids={omdb_candidates})"
-            )
-        if tag_candidates:
-            parts.append(
-                f"• `/sanity tags` → {len(tag_candidates)} row(s) (ids={tag_candidates})"
-            )
+    if report.omdb_misses:
+        parts.append(
+            f"**OMDB couldn't find these — fix titles in the sheet ({len(report.omdb_misses)}):**"
+        )
+        parts.extend(f"• {line}" for line in report.omdb_misses)
         parts.append("")
 
     parts.append(f"**Needs human attention ({len(report.issues)}):**")
@@ -470,9 +280,10 @@ def _format_detail(report) -> str:
     else:
         parts.append("• _(all clear)_")
     parts.append("")
-    parts.append(f"**Schedule gap weeks ({len(report.gap_weeks)}):**")
+    parts.append(f"**Schedule gaps ({len(report.gap_weeks)}):**")
     if report.gap_weeks:
-        parts.extend(f"• Week of {wk.strftime('%b %d, %Y')}" for wk in report.gap_weeks)
+        # gap_weeks is already pre-formatted with severity symbols.
+        parts.extend(f"• {line}" for line in report.gap_weeks)
     else:
         parts.append("• _(no gaps)_")
     return "\n".join(parts)

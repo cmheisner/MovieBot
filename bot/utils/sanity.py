@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import logging
+import re
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 
@@ -22,6 +24,14 @@ _DUPLICATE_DATE_WINDOW_SECONDS = 12 * 60 * 60  # 12 hours
 
 # Anything more than a year out is likely a typo.
 _FAR_FUTURE_DAYS = 365
+
+# Gentle throttle between OMDB fetches inside /sanity check's enrichment pass.
+_OMDB_SLEEP_SECONDS = 0.1
+
+# Inline copy of the year-suffix regex from bot.utils.movie_lookup to avoid
+# pulling discord.py into this module's import graph (movie_lookup depends on
+# discord; sanity shouldn't).
+_YEAR_SUFFIX_RE = re.compile(r"^(.+?)\s*\((\d{4})\)\s*$")
 
 log = logging.getLogger(__name__)
 
@@ -51,16 +61,17 @@ _BACKFILL_FIELDS = ("notes", "apple_tv_url", "image_url", "omdb_data", "season")
 class SanityReport:
     fixes: list[str] = field(default_factory=list)
     issues: list[str] = field(default_factory=list)
-    gap_weeks: list[date] = field(default_factory=list)
+    # Pre-formatted gap-week warnings — each string already carries its
+    # severity symbol and message (see _find_gap_warnings).
+    gap_weeks: list[str] = field(default_factory=list)
     # Structured counts for summary-mode rendering. Keys correspond to the
     # aggregated bullet types emitted into `issues`. Zero-valued entries are
     # omitted so the summary formatter only prints categories with matches.
     counts: dict[str, int] = field(default_factory=dict)
-    # Rows the backfill subcommands would actually change. Lets /sanity test
-    # preview impact of /sanity omdb and /sanity tags. Selection logic mirrors
-    # the subcommands exactly, so test-then-run is guaranteed consistent.
-    omdb_backfill_candidates: list[int] = field(default_factory=list)
-    tag_backfill_candidates: list[int] = field(default_factory=list)
+    # Rows OMDB enrichment couldn't resolve — the title/year didn't return a
+    # match. Usually a typo that needs a hand-edit in the sheet. Emitted as
+    # a dedicated section in /sanity check so the user knows what to fix.
+    omdb_misses: list[str] = field(default_factory=list)
 
 
 def _trust_score(m: Movie) -> tuple[int, int, int]:
@@ -72,44 +83,177 @@ def _trust_score(m: Movie) -> tuple[int, int, int]:
     return (status_rank, completeness, -m.id)
 
 
-def _find_gap_weeks(entries_asc: list, today: date | None = None) -> list[date]:
-    """Return Mondays of empty weeks between the first and last scheduled week,
-    limited to weeks whose Monday is today or later (past gaps are not
-    actionable and just clutter the report).
+def _find_gap_warnings(entries_asc: list, today: date | None = None) -> list[str]:
+    """Return pre-formatted gap warnings for missing Wed/Thu slots.
 
-    A week is considered "has entries" if ANY of its Wed/Thu slots are
-    booked — so a week with only a Wed movie is NOT a gap.
+    Severity convention (Brandon's call):
+      ❌ error   — missing Wednesday (Wed is the "anchor" night)
+      ⚠️ warning — missing Thursday (but Wed is scheduled)
+      ❌ error   — missing both days of a week; combined into one line
+
+    Scope:
+      - Only flags weeks whose Monday is today or later — past gaps aren't
+        actionable and were cluttering the report.
+      - Within the current week, days that are already in the past aren't
+        flagged (can't schedule yesterday).
+      - Scan range is capped at the last scheduled entry's week — we don't
+        predict infinite future gaps.
+
+    Returns a list of strings ready to drop into a bullet list, e.g.:
+      "❌ **Wed May 20 + Thu May 21** — no movies this week"
+      "⚠️ **Thu May 28** — no Thursday movie"
+      "❌ **Wed Jun 24** — no Wednesday movie"
     """
     valid = [e for e in entries_asc if e.scheduled_for is not None]
     if not valid:
         return []
-    weeks_with_entries = {week_monday(e.scheduled_for) for e in valid}
-    first = min(weeks_with_entries)
-    last = max(weeks_with_entries)
+    booked_dates = {
+        e.scheduled_for.astimezone(TZ_EASTERN).date() for e in valid
+    }
+    first_monday = week_monday(min(valid, key=lambda e: e.scheduled_for).scheduled_for)
+    last_monday = week_monday(max(valid, key=lambda e: e.scheduled_for).scheduled_for)
 
     if today is None:
         today = datetime.now(TZ_EASTERN).date()
     today_monday = today - timedelta(days=today.weekday())
+    start_monday = max(first_monday, today_monday)
 
-    gaps: list[date] = []
-    cur = first + timedelta(days=7)
-    while cur <= last:
-        if cur not in weeks_with_entries and cur >= today_monday:
-            gaps.append(cur)
+    warnings: list[str] = []
+    cur = start_monday
+    while cur <= last_monday:
+        wed = cur + timedelta(days=2)
+        thu = cur + timedelta(days=3)
+        # A day that's already past can't be flagged — treat it as "covered"
+        # for the purposes of this week's warning.
+        wed_missing = (wed not in booked_dates) and wed >= today
+        thu_missing = (thu not in booked_dates) and thu >= today
+
+        if wed_missing and thu_missing:
+            warnings.append(
+                f"❌ **Wed {wed.strftime('%b %d')} + Thu {thu.strftime('%b %d')}** "
+                f"— no movies this week"
+            )
+        elif wed_missing:
+            warnings.append(
+                f"❌ **Wed {wed.strftime('%b %d')}** — no Wednesday movie"
+            )
+        elif thu_missing:
+            warnings.append(
+                f"⚠️ **Thu {thu.strftime('%b %d')}** — no Thursday movie"
+            )
+
         cur += timedelta(days=7)
-    return gaps
+    return warnings
+
+
+def _clean_title(raw: str) -> str:
+    """Strip trailing '(YYYY)' — defensive for old data-entry artifacts."""
+    m = _YEAR_SUFFIX_RE.match(raw)
+    return m.group(1).strip() if m else raw
+
+
+async def _enrich_omdb(
+    storage: StorageProvider,
+    media,
+    movies_by_id: dict[int, Movie],
+) -> tuple[int, int, list[str]]:
+    """Fetch OMDB metadata for movies missing it, write back, recompute tags
+    when the row had none. Mirrors the old /sanity omdb command exactly.
+
+    Returns (fetched_count, tagged_count, miss_lines). `miss_lines` are
+    pre-formatted strings naming the typo-title rows that failed to resolve.
+
+    Mutates movies_by_id in place so later passes see post-enrichment state.
+    """
+    targets = [
+        m for m in movies_by_id.values()
+        if not m.omdb_data and m.year
+    ]
+    if not targets:
+        return 0, 0, []
+
+    updates: dict[int, dict] = {}
+    fetched = 0
+    tagged = 0
+    miss_lines: list[str] = []
+
+    for m in targets:
+        cleaned_title = _clean_title(m.title)
+        try:
+            omdb = await media.fetch_metadata(cleaned_title, m.year)
+        except Exception as exc:
+            log.warning("Sanity enrichment: OMDB fetch failed for id=%d: %s", m.id, exc)
+            omdb = None
+        await asyncio.sleep(_OMDB_SLEEP_SECONDS)
+
+        if not omdb:
+            miss_lines.append(f"id={m.id} '{cleaned_title}' ({m.year})")
+            continue
+
+        patch: dict = {"omdb_data": omdb}
+        row_has_tags = any(m.tags.get(t) for t in TAG_NAMES)
+        if not row_has_tags:
+            computed = tags_from_omdb(omdb)
+            if any(computed.values()):
+                patch["tags"] = computed
+                tagged += 1
+        updates[m.id] = patch
+        # Reflect the write in the local snapshot so downstream passes see it.
+        m.omdb_data = omdb
+        if "tags" in patch:
+            m.tags = {**m.tags, **patch["tags"]}
+        fetched += 1
+
+    if updates:
+        await storage.bulk_update_movies(updates)
+    return fetched, tagged, miss_lines
+
+
+async def _enrich_tags(
+    storage: StorageProvider,
+    movies_by_id: dict[int, Movie],
+) -> int:
+    """Recompute tags for movies with omdb_data but no tags set. Honors any
+    designer-set tags (skips rows that already have any tag bit on).
+
+    Mutates movies_by_id in place so later passes see post-enrichment state.
+    """
+    targets = [
+        m for m in movies_by_id.values()
+        if m.omdb_data and not any(m.tags.get(t) for t in TAG_NAMES)
+    ]
+    if not targets:
+        return 0
+
+    updates: dict[int, dict] = {}
+    for m in targets:
+        computed = tags_from_omdb(m.omdb_data)
+        if any(computed.values()):
+            updates[m.id] = {"tags": computed}
+            m.tags = {**m.tags, **computed}
+
+    if updates:
+        await storage.bulk_update_movies(updates)
+    return len(updates)
 
 
 async def run_sanity_check(
     storage: StorageProvider,
+    media=None,
     dry_run: bool = False,
 ) -> SanityReport:
     """Audit the backing store, auto-fix what's safely fixable, and return
-    a structured report of remaining issues and schedule gap weeks.
+    a structured report of remaining issues and schedule gap warnings.
 
     dry_run=True: no writes are issued; report.fixes describes what *would*
     be fixed. Local bookkeeping still advances so cascading steps report
     accurately.
+
+    media=<MediaMetadataProvider>: when supplied (and not dry_run), rows
+    missing omdb_data get their metadata fetched and written back. The same
+    pass also recomputes genre tags for any row that ended up with omdb_data
+    but no tags. OMDB misses (typo titles) are collected into
+    report.omdb_misses for the operator to hand-fix.
 
     Field-completeness checks (missing omdb_data, no poster, no tags, etc.)
     cover ALL movies regardless of status — historical WATCHED/SKIPPED rows
@@ -341,6 +485,29 @@ async def run_sanity_check(
     if step8_reverts and not dry_run:
         await storage.bulk_update_movies(step8_reverts)
 
+    # ── Step 9: OMDB enrichment (when media provided and live run) ──────
+    # Merges the old /sanity omdb logic so /sanity check is a one-stop
+    # workflow. OMDB misses are tracked for the dedicated report section.
+    if media is not None and not dry_run:
+        fetched, tagged_via_omdb, miss_lines = await _enrich_omdb(
+            storage, media, movies_by_id,
+        )
+        if fetched:
+            report.fixes.append(
+                f"Fetched OMDB metadata for {fetched} movie(s); "
+                f"{tagged_via_omdb} also got fresh genre tags."
+            )
+        report.omdb_misses = miss_lines
+
+    # ── Step 10: Tag recomputation for rows with omdb but no tags ───────
+    # Merges the old /sanity tags logic. Honors designer-set tags.
+    if not dry_run:
+        retagged = await _enrich_tags(storage, movies_by_id)
+        if retagged:
+            report.fixes.append(
+                f"Recomputed genre tags for {retagged} movie(s) from stored OMDB data."
+            )
+
     # ── Flag-only checks: re-fetch to get the post-fix state ─────────────
     final_movies = await storage.list_movies(status="all")
 
@@ -373,20 +540,10 @@ async def run_sanity_check(
 
         # Field-completeness checks run for every status, including
         # WATCHED/SKIPPED. Keeps historical rows flagged so the database
-        # stays clean over time.
+        # stays clean over time. Enrichment ran above (step 9/10), so what
+        # flags now is what couldn't be auto-resolved (OMDB misses, etc.).
 
-        # Backfill candidates — mirror the subcommands' selection so /sanity
-        # test previews match what /sanity omdb and /sanity tags would do.
         row_has_tags = any(m.tags.get(t) for t in TAG_NAMES)
-        if not m.omdb_data and m.year:
-            report.omdb_backfill_candidates.append(m.id)
-        elif m.omdb_data and not row_has_tags:
-            computed = tags_from_omdb(m.omdb_data)
-            if any(computed.values()):
-                # Only list candidates that would actually get new tags —
-                # skip rows whose OMDB Genre doesn't map to any of our 8.
-                report.tag_backfill_candidates.append(m.id)
-
         if not (m.season or "").strip():
             missing_season.append(m.id)
         if not row_has_tags:
@@ -491,8 +648,8 @@ async def run_sanity_check(
             report.counts[name] = len(bucket)
             report.issues.append(f"{len(bucket)} {template.format(ids=bucket)}")
 
-    # ── Gap-week detection on the final schedule state ──────────────────
+    # ── Gap-week warnings on the final schedule state ───────────────────
     entries_asc = sorted(dated, key=lambda e: e.scheduled_for)
-    report.gap_weeks = _find_gap_weeks(entries_asc)
+    report.gap_weeks = _find_gap_warnings(entries_asc)
 
     return report
