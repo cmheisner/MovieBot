@@ -691,6 +691,100 @@ def test_counts_dict_tracks_multiple_categories():
     assert report.counts.get("missing_omdb_data") == 1
 
 
+# ── Schedule sanity checks ──────────────────────────────────────────────────
+
+def _movie_night(offset_days: int = 7, *, hour: int = 22, minute: int = 30, weekday: int = 2):
+    """Build a datetime for a movie-night slot — Wed by default, N days out."""
+    # Start from a known Wednesday: 2026-04-29 22:30 ET → 2026-04-30 02:30 UTC.
+    base = datetime(2026, 4, 30, 2, 30, tzinfo=timezone.utc)
+    # Nudge to the target weekday (0=Mon, 2=Wed, 3=Thu).
+    from bot.constants import TZ_EASTERN
+    et_base = base.astimezone(TZ_EASTERN)
+    delta_days = (weekday - et_base.weekday()) % 7
+    slot = et_base + timedelta(days=delta_days + offset_days)
+    slot = slot.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    return slot.astimezone(timezone.utc)
+
+
+def test_schedule_flags_past_scheduled_not_watched():
+    """SCHEDULED movie with a past date — maintenance auto-watched should have fixed it."""
+    s = FakeStorage()
+    s.movies[5] = _movie(5, status=MovieStatus.SCHEDULED)
+    past = datetime.now(timezone.utc) - timedelta(days=3)
+    s.schedule_entries[1] = _schedule_entry(1, movie_id=5, scheduled_for=past)
+
+    report = _run(s)
+
+    assert report.counts.get("past_scheduled_stuck") == 1
+    assert any("5" in i and "past" in i for i in report.issues)
+
+
+def test_schedule_does_not_flag_future_scheduled():
+    s = FakeStorage()
+    s.movies[5] = _movie(5, status=MovieStatus.SCHEDULED)
+    s.schedule_entries[1] = _schedule_entry(1, movie_id=5, scheduled_for=_movie_night())
+
+    report = _run(s)
+
+    assert "past_scheduled_stuck" not in report.counts
+
+
+def test_schedule_flags_off_movie_night_entries():
+    """Mondays or wrong times should be flagged."""
+    s = FakeStorage()
+    s.movies[1] = _movie(1, title="MonMovie", status=MovieStatus.SCHEDULED)
+    s.movies[2] = _movie(2, title="WrongTime", status=MovieStatus.SCHEDULED)
+    s.movies[3] = _movie(3, title="Correct", status=MovieStatus.SCHEDULED)
+    s.schedule_entries[1] = _schedule_entry(1, 1, scheduled_for=_movie_night(weekday=0))  # Mon
+    s.schedule_entries[2] = _schedule_entry(2, 2, scheduled_for=_movie_night(hour=19))    # Wed 7pm
+    s.schedule_entries[3] = _schedule_entry(3, 3, scheduled_for=_movie_night())           # Wed 10:30pm ✓
+
+    report = _run(s)
+
+    assert report.counts.get("schedule_off_movie_night") == 2
+
+
+def test_schedule_does_not_flag_wed_thu_adjacent_nights_as_duplicates():
+    """Wed 10:30 PM ET and Thu 10:30 PM ET are 24h apart — not a conflict."""
+    s = FakeStorage()
+    s.movies[1] = _movie(1, title="WedMovie", status=MovieStatus.SCHEDULED)
+    s.movies[2] = _movie(2, title="ThuMovie", status=MovieStatus.SCHEDULED)
+    s.schedule_entries[1] = _schedule_entry(1, 1, scheduled_for=_movie_night(weekday=2))  # Wed
+    s.schedule_entries[2] = _schedule_entry(2, 2, scheduled_for=_movie_night(weekday=3))  # Thu
+
+    report = _run(s)
+
+    assert "schedule_duplicate_dates" not in report.counts
+
+
+def test_schedule_flags_duplicate_dates_within_12h():
+    s = FakeStorage()
+    s.movies[1] = _movie(1, title="A", status=MovieStatus.SCHEDULED)
+    s.movies[2] = _movie(2, title="B", status=MovieStatus.SCHEDULED)
+    wed = _movie_night(weekday=2)
+    s.schedule_entries[1] = _schedule_entry(1, 1, scheduled_for=wed)
+    s.schedule_entries[2] = _schedule_entry(2, 2, scheduled_for=wed + timedelta(hours=3))
+
+    report = _run(s)
+
+    assert report.counts.get("schedule_duplicate_dates") == 1
+
+
+def test_schedule_flags_far_future_entries():
+    s = FakeStorage()
+    s.movies[1] = _movie(1, title="Soon", status=MovieStatus.SCHEDULED)
+    s.movies[2] = _movie(2, title="Typo", status=MovieStatus.SCHEDULED)
+    s.schedule_entries[1] = _schedule_entry(1, 1, scheduled_for=_movie_night(offset_days=30))
+    # 2+ years out — almost certainly a typo.
+    s.schedule_entries[2] = _schedule_entry(
+        2, 2, scheduled_for=datetime.now(timezone.utc) + timedelta(days=800)
+    )
+
+    report = _run(s)
+
+    assert report.counts.get("schedule_far_future") == 1
+
+
 # ── Backfill candidate preview (powers /sanity test section) ────────────────
 
 def test_omdb_backfill_candidates_reported():

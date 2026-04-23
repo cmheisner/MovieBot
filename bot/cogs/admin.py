@@ -187,7 +187,7 @@ class AdminCog(commands.Cog, name="Admin"):
                 f"⚠️ Could not attach log file: {exc}", ephemeral=True
             )
 
-    # ── /sanity {summary|test|clean} ──────────────────────────────────────
+    # ── /sanity {check|omdb|tags} ─────────────────────────────────────────
 
     sanity = app_commands.Group(
         name="sanity",
@@ -195,36 +195,19 @@ class AdminCog(commands.Cog, name="Admin"):
     )
 
     @sanity.command(
-        name="test",
-        description="[Admin] Dry-run — preview fixes and flagged issues without writing.",
+        name="check",
+        description="[Admin] Audit the sheet, auto-fix what's safe, flag the rest.",
     )
     @app_commands.checks.has_permissions(manage_guild=True)
-    async def sanity_test(self, interaction: discord.Interaction) -> None:
-        await self._run_sanity(interaction, dry_run=True)
-
-    @sanity.command(
-        name="clean",
-        description="[Admin] Live run — auto-fix what's safe, write to the sheet.",
-    )
-    @app_commands.checks.has_permissions(manage_guild=True)
-    async def sanity_clean(self, interaction: discord.Interaction) -> None:
-        await self._run_sanity(interaction, dry_run=False)
-
-    async def _run_sanity(
-        self,
-        interaction: discord.Interaction,
-        *,
-        dry_run: bool,
-    ) -> None:
-        mode = "test" if dry_run else "clean"
+    async def sanity_check(self, interaction: discord.Interaction) -> None:
         log.info(
-            "Sanity %s requested by %s (id=%d).",
-            mode, interaction.user, interaction.user.id,
+            "Sanity check requested by %s (id=%d).",
+            interaction.user, interaction.user.id,
         )
         await interaction.response.defer(ephemeral=True)
 
         try:
-            report = await run_sanity_check(self.bot.storage, dry_run=dry_run)
+            report = await run_sanity_check(self.bot.storage, dry_run=False)
         except Exception as exc:
             log.exception("Sanity check failed.")
             await interaction.followup.send(f"⚠️ Sanity check failed: {exc}", ephemeral=True)
@@ -234,25 +217,21 @@ class AdminCog(commands.Cog, name="Admin"):
         issue_count = len(report.issues)
         gap_count = len(report.gap_weeks)
         log.info(
-            "Sanity %s complete — %d %s, %d flagged, %d gap weeks.",
-            mode, fix_count, "would-fix" if dry_run else "fixed", issue_count, gap_count,
+            "Sanity check complete — %d fixed, %d flagged, %d gap weeks.",
+            fix_count, issue_count, gap_count,
         )
 
-        body = _format_detail(report, dry_run=dry_run)
+        body = _format_detail(report)
 
         if len(body) <= _SANITY_INLINE_CHAR_LIMIT:
             await interaction.followup.send(body, ephemeral=True)
             return
 
         buf = io.BytesIO(body.encode("utf-8"))
-        header = (
-            f"Sanity {mode} — {fix_count} "
-            f"{'would-fix' if dry_run else 'auto-fixed'}, "
-            f"{issue_count} flagged, {gap_count} gap weeks (attached)."
-        )
         await interaction.followup.send(
-            header,
-            file=discord.File(buf, filename=f"sanity_{mode}.txt"),
+            f"Sanity check — {fix_count} auto-fixed, {issue_count} flagged, "
+            f"{gap_count} gap weeks (attached).",
+            file=discord.File(buf, filename="sanity_check.txt"),
             ephemeral=True,
         )
 
@@ -461,21 +440,20 @@ class AdminCog(commands.Cog, name="Admin"):
             pass
 
 
-def _format_detail(report, *, dry_run: bool) -> str:
-    fix_header = "Would auto-fix" if dry_run else "Auto-fixed"
-    parts = [f"**{fix_header} ({len(report.fixes)}):**"]
+def _format_detail(report) -> str:
+    parts = [f"**Auto-fixed ({len(report.fixes)}):**"]
     if report.fixes:
         parts.extend(f"• {line}" for line in report.fixes)
     else:
         parts.append("• _(nothing)_")
     parts.append("")
 
-    # Preview what the subcommands would do, so /sanity test gives a real
-    # impact forecast rather than an always-empty "would auto-fix" block.
+    # Preview what the enrichment subcommands would do on the next run,
+    # so /sanity check tells you at a glance whether to run them.
     omdb_candidates = report.omdb_backfill_candidates
     tag_candidates = report.tag_backfill_candidates
     if omdb_candidates or tag_candidates:
-        parts.append("**Would enrich via subcommands:**")
+        parts.append("**Could enrich via subcommands:**")
         if omdb_candidates:
             parts.append(
                 f"• `/sanity omdb` → {len(omdb_candidates)} row(s) (ids={omdb_candidates})"

@@ -4,11 +4,24 @@ import logging
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 
+from bot.constants import MOVIE_NIGHT_HOUR, MOVIE_NIGHT_MINUTE, TZ_EASTERN
 from bot.models.movie import Movie, MovieStatus, TAG_NAMES
 from bot.models.poll import PollStatus
 from bot.providers.storage.base import StorageProvider
 from bot.utils.tags import tags_from_omdb
 from bot.utils.time_utils import week_monday
+
+# Movie nights fall on Wednesday (weekday 2) or Thursday (weekday 3) at
+# MOVIE_NIGHT_HOUR:MOVIE_NIGHT_MINUTE Eastern. Entries outside this grid
+# get flagged by the schedule sanity checks below.
+_MOVIE_NIGHT_WEEKDAYS = {2, 3}
+
+# Conflict window for duplicate-date detection — matches the conflict
+# window /schedule add and /schedule reschedule enforce.
+_DUPLICATE_DATE_WINDOW_SECONDS = 12 * 60 * 60  # 12 hours
+
+# Anything more than a year out is likely a typo.
+_FAR_FUTURE_DAYS = 365
 
 log = logging.getLogger(__name__)
 
@@ -400,11 +413,75 @@ async def run_sanity_check(
             report.counts[name] = len(bucket)
             report.issues.append(f"{len(bucket)} {template.format(ids=bucket)}")
 
+    # ── Schedule sanity checks (flag-only) ──────────────────────────────
+    # Run against schedule_final — post-fix state — so anything step 6 or 7
+    # already handled won't re-appear here.
+    past_scheduled_ids: list[int] = []
+    off_night_entries: list[str] = []
+    duplicate_date_pairs: list[str] = []
+    far_future_ids: list[int] = []
+
+    now = datetime.now(timezone.utc)
+    far_future_cutoff = now + timedelta(days=_FAR_FUTURE_DAYS)
+
+    dated = [e for e in schedule_final if e.scheduled_for is not None]
+
+    # 1. Past-scheduled movies still marked SCHEDULED. Maintenance's
+    #    auto-watched loop should catch these; if sanity sees one, either
+    #    the loop missed a run or the bot was down. Flag for investigation
+    #    rather than auto-fix (don't paper over maintenance bugs).
+    for entry in dated:
+        if entry.scheduled_for >= now:
+            continue
+        movie = movies_by_id.get(entry.movie_id)
+        if movie and movie.status == MovieStatus.SCHEDULED:
+            past_scheduled_ids.append(movie.id)
+
+    # 2. Entries not on Wed/Thu at 10:30 PM ET — convention violation,
+    #    typically from manual sheet edits or very old data.
+    for entry in dated:
+        et = entry.scheduled_for.astimezone(TZ_EASTERN)
+        if (
+            et.weekday() not in _MOVIE_NIGHT_WEEKDAYS
+            or et.hour != MOVIE_NIGHT_HOUR
+            or et.minute != MOVIE_NIGHT_MINUTE
+        ):
+            off_night_entries.append(
+                f"entry={entry.id} ({et.strftime('%a %Y-%m-%d %H:%M ET')})"
+            )
+
+    # 3. Duplicate-date conflicts (within 12 h of each other). /schedule
+    #    add already prevents this for new entries, but legacy data or
+    #    manual edits could slip through.
+    sorted_dated = sorted(dated, key=lambda e: e.scheduled_for)
+    for i in range(len(sorted_dated) - 1):
+        a, b = sorted_dated[i], sorted_dated[i + 1]
+        delta = abs((b.scheduled_for - a.scheduled_for).total_seconds())
+        if delta <= _DUPLICATE_DATE_WINDOW_SECONDS:
+            duplicate_date_pairs.append(f"entries=[{a.id}, {b.id}]")
+
+    # 4. Far-future entries — more than a year out is almost always a typo.
+    for entry in dated:
+        if entry.scheduled_for > far_future_cutoff:
+            far_future_ids.append(entry.id)
+
+    _schedule_categories: list[tuple[str, list, str]] = [
+        ("past_scheduled_stuck", past_scheduled_ids,
+         "movie(s) scheduled in the past but still marked SCHEDULED: ids={ids}"),
+        ("schedule_off_movie_night", off_night_entries,
+         "schedule entry(ies) not on Wed/Thu at 10:30 PM ET: {ids}"),
+        ("schedule_duplicate_dates", duplicate_date_pairs,
+         "schedule date conflict(s) (within 12 h): {ids}"),
+        ("schedule_far_future", far_future_ids,
+         "schedule entry(ies) more than 1 year out (likely typo): ids={ids}"),
+    ]
+    for name, bucket, template in _schedule_categories:
+        if bucket:
+            report.counts[name] = len(bucket)
+            report.issues.append(f"{len(bucket)} {template.format(ids=bucket)}")
+
     # ── Gap-week detection on the final schedule state ──────────────────
-    entries_asc = sorted(
-        [e for e in schedule_final if e.scheduled_for is not None],
-        key=lambda e: e.scheduled_for,
-    )
+    entries_asc = sorted(dated, key=lambda e: e.scheduled_for)
     report.gap_weeks = _find_gap_weeks(entries_asc)
 
     return report
