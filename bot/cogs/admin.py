@@ -12,9 +12,12 @@ from discord.ext import commands
 from gspread.exceptions import APIError
 
 from bot.constants import LOG_FILE_PATH
+from bot.models.movie import MovieStatus, TAG_NAMES
+from bot.utils.movie_lookup import parse_title_year
 from bot.utils.restart_notify import save_marker
 from bot.utils.runtime import git_short_sha
 from bot.utils.sanity import run_sanity_check
+from bot.utils.tags import tags_from_omdb
 
 log = logging.getLogger(__name__)
 
@@ -24,6 +27,16 @@ _DEV_STATE_CHOICES = [
 ]
 
 _SANITY_INLINE_CHAR_LIMIT = 1900
+
+_ACTIVE_STATUSES = {
+    MovieStatus.STASH,
+    MovieStatus.NOMINATED,
+    MovieStatus.SCHEDULED,
+}
+
+# Gentle throttle between OMDB fetches. Free-tier allows 1000/day; a backfill
+# of ~100 rows is well under budget but we avoid hammering the endpoint.
+_OMDB_SLEEP_SECONDS = 0.1
 
 
 class AdminCog(commands.Cog, name="Admin"):
@@ -246,6 +259,185 @@ class AdminCog(commands.Cog, name="Admin"):
         await interaction.followup.send(
             header,
             file=discord.File(buf, filename=f"sanity_{mode}.txt"),
+            ephemeral=True,
+        )
+
+    # ── /backfill {omdb|tags} ────────────────────────────────────────────
+
+    backfill = app_commands.Group(
+        name="backfill",
+        description="[Admin] Enrich movie rows from OMDB or recompute tags.",
+    )
+
+    @backfill.command(
+        name="omdb",
+        description="[Admin] Fetch OMDB metadata for active movies that are missing it.",
+    )
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def backfill_omdb(self, interaction: discord.Interaction) -> None:
+        log.info(
+            "Backfill omdb requested by %s (id=%d).",
+            interaction.user, interaction.user.id,
+        )
+        await interaction.response.defer(ephemeral=True)
+
+        try:
+            all_movies = await self.bot.storage.list_movies(status="all")
+        except Exception as exc:
+            log.exception("Backfill omdb: failed to list movies.")
+            await interaction.followup.send(f"⚠️ Could not list movies: {exc}", ephemeral=True)
+            return
+
+        targets = [
+            m for m in all_movies
+            if m.status in _ACTIVE_STATUSES and not m.omdb_data and m.year
+        ]
+        skipped_no_year = sum(
+            1 for m in all_movies
+            if m.status in _ACTIVE_STATUSES and not m.omdb_data and not m.year
+        )
+
+        updates: dict[int, dict] = {}
+        fetched: list[int] = []
+        tagged: list[int] = []
+        missed: list[tuple[int, str, int]] = []
+
+        for m in targets:
+            # Defensive title cleanup — strip trailing "(YYYY)" left over from
+            # old /stash add entries before the year-suffix fix.
+            cleaned_title, _ = parse_title_year(m.title)
+            try:
+                omdb = await self.bot.media.fetch_metadata(cleaned_title, m.year)
+            except Exception as exc:
+                log.warning("Backfill omdb: fetch failed for id=%d: %s", m.id, exc)
+                omdb = None
+            await asyncio.sleep(_OMDB_SLEEP_SECONDS)
+
+            if not omdb:
+                missed.append((m.id, cleaned_title, m.year))
+                continue
+
+            patch: dict = {"omdb_data": omdb}
+            if not any(m.tags.get(t) for t in TAG_NAMES):
+                computed = tags_from_omdb(omdb)
+                if any(computed.values()):
+                    patch["tags"] = computed
+                    tagged.append(m.id)
+            updates[m.id] = patch
+            fetched.append(m.id)
+
+        if updates:
+            try:
+                await self.bot.storage.bulk_update_movies(updates)
+            except Exception as exc:
+                log.exception("Backfill omdb: bulk update failed.")
+                await interaction.followup.send(
+                    f"⚠️ Fetched {len(fetched)} row(s) from OMDB but the sheet write failed: {exc}",
+                    ephemeral=True,
+                )
+                return
+
+        log.info(
+            "Backfill omdb complete — fetched=%d, tagged=%d, missed=%d, skipped_no_year=%d.",
+            len(fetched), len(tagged), len(missed), skipped_no_year,
+        )
+
+        parts = [
+            f"**OMDB backfill complete.**",
+            f"• Candidates (active + missing omdb_data): **{len(targets) + skipped_no_year}**",
+            f"• Fetched + written: **{len(fetched)}**",
+            f"• Tags also recomputed: **{len(tagged)}**",
+            f"• OMDB miss (likely title typo): **{len(missed)}**",
+        ]
+        if skipped_no_year:
+            parts.append(f"• Skipped (no year on row): **{skipped_no_year}**")
+        if missed:
+            parts.append("")
+            parts.append("**Misses — fix titles manually in the sheet:**")
+            parts.extend(f"• id={mid} '{title}' ({year})" for mid, title, year in missed)
+
+        body = "\n".join(parts)
+        if len(body) <= _SANITY_INLINE_CHAR_LIMIT:
+            await interaction.followup.send(body, ephemeral=True)
+            return
+        buf = io.BytesIO(body.encode("utf-8"))
+        await interaction.followup.send(
+            f"OMDB backfill — {len(fetched)} fetched, {len(missed)} miss (attached).",
+            file=discord.File(buf, filename="backfill_omdb.txt"),
+            ephemeral=True,
+        )
+
+    @backfill.command(
+        name="tags",
+        description="[Admin] Recompute genre tags for active movies that have omdb_data but no tags set.",
+    )
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def backfill_tags_cmd(self, interaction: discord.Interaction) -> None:
+        log.info(
+            "Backfill tags requested by %s (id=%d).",
+            interaction.user, interaction.user.id,
+        )
+        await interaction.response.defer(ephemeral=True)
+
+        try:
+            all_movies = await self.bot.storage.list_movies(status="all")
+        except Exception as exc:
+            log.exception("Backfill tags: failed to list movies.")
+            await interaction.followup.send(f"⚠️ Could not list movies: {exc}", ephemeral=True)
+            return
+
+        targets = [
+            m for m in all_movies
+            if m.status in _ACTIVE_STATUSES
+            and m.omdb_data
+            and not any(m.tags.get(t) for t in TAG_NAMES)
+        ]
+
+        updates: dict[int, dict] = {}
+        no_mapping: list[int] = []
+        for m in targets:
+            computed = tags_from_omdb(m.omdb_data)
+            if any(computed.values()):
+                updates[m.id] = {"tags": computed}
+            else:
+                # Has omdb_data but OMDB's Genre didn't map to any of our 8 tags.
+                no_mapping.append(m.id)
+
+        if updates:
+            try:
+                await self.bot.storage.bulk_update_movies(updates)
+            except Exception as exc:
+                log.exception("Backfill tags: bulk update failed.")
+                await interaction.followup.send(
+                    f"⚠️ Sheet write failed: {exc}", ephemeral=True,
+                )
+                return
+
+        log.info(
+            "Backfill tags complete — retagged=%d, no_mapping=%d.",
+            len(updates), len(no_mapping),
+        )
+
+        parts = [
+            f"**Tag backfill complete.**",
+            f"• Candidates (active + has omdb + no tags): **{len(targets)}**",
+            f"• Retagged: **{len(updates)}**",
+            f"• Had omdb_data but no OMDB-to-tag mapping: **{len(no_mapping)}**",
+        ]
+        if no_mapping:
+            parts.append("")
+            parts.append(
+                f"ids with no mapping: {no_mapping}"
+            )
+
+        body = "\n".join(parts)
+        if len(body) <= _SANITY_INLINE_CHAR_LIMIT:
+            await interaction.followup.send(body, ephemeral=True)
+            return
+        buf = io.BytesIO(body.encode("utf-8"))
+        await interaction.followup.send(
+            f"Tag backfill — {len(updates)} retagged, {len(no_mapping)} no-mapping (attached).",
+            file=discord.File(buf, filename="backfill_tags.txt"),
             ephemeral=True,
         )
 
