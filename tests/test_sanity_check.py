@@ -431,25 +431,25 @@ def test_flag_active_movie_missing_tags():
     assert report.counts.get("missing_tags") == 1
 
 
-def test_flag_skipped_movie_issues_silenced():
-    """_ACTIVE_STATUSES filter: season/tag checks skip dismissed movies."""
+def test_flag_skipped_movie_issues_now_included():
+    """Flag-only checks now cover SKIPPED too — keeps historical data clean."""
     s = FakeStorage()
     s.movies[5] = _movie(5, status=MovieStatus.SKIPPED, season=None, tags=empty_tags())
 
     report = _run(s)
 
-    assert "missing_season" not in report.counts
-    assert "missing_tags" not in report.counts
+    assert report.counts.get("missing_season") == 1
+    assert report.counts.get("missing_tags") == 1
 
 
-def test_flag_watched_movie_issues_silenced():
+def test_flag_watched_movie_issues_now_included():
     s = FakeStorage()
     s.movies[5] = _movie(5, status=MovieStatus.WATCHED, season=None, tags=empty_tags())
 
     report = _run(s)
 
-    assert "missing_season" not in report.counts
-    assert "missing_tags" not in report.counts
+    assert report.counts.get("missing_season") == 1
+    assert report.counts.get("missing_tags") == 1
 
 
 # ── Dry-run semantics ────────────────────────────────────────────────────────
@@ -694,17 +694,20 @@ def test_counts_dict_tracks_multiple_categories():
 # ── Backfill candidate preview (powers /sanity test section) ────────────────
 
 def test_omdb_backfill_candidates_reported():
-    """Active + no omdb_data + has year → appears in omdb_backfill_candidates."""
+    """Any status + no omdb_data + has year → appears in omdb_backfill_candidates.
+    Historical movies (WATCHED/SKIPPED) are now included for full-sheet cleanup.
+    """
     s = FakeStorage()
     # Unique titles so step 3 dedup doesn't collapse them before the flag pass.
-    s.movies[5] = _movie(5, title="Target",   status=MovieStatus.STASH,   omdb_data=None)
-    s.movies[6] = _movie(6, title="Historic", status=MovieStatus.WATCHED, omdb_data=None)  # historical
-    s.movies[7] = _movie(7, title="NoYear",   status=MovieStatus.STASH, year=0, omdb_data=None)  # no year
-    s.movies[8] = _movie(8, title="Has",      status=MovieStatus.STASH, omdb_data={"Title": "X"})  # has data
+    s.movies[5] = _movie(5, title="Stash",    status=MovieStatus.STASH,   omdb_data=None)
+    s.movies[6] = _movie(6, title="Watched",  status=MovieStatus.WATCHED, omdb_data=None)
+    s.movies[7] = _movie(7, title="Skipped",  status=MovieStatus.SKIPPED, omdb_data=None)
+    s.movies[8] = _movie(8, title="NoYear",   status=MovieStatus.STASH, year=0, omdb_data=None)  # no year
+    s.movies[9] = _movie(9, title="Has",      status=MovieStatus.STASH, omdb_data={"Title": "X"})  # has data
 
     report = _run(s)
 
-    assert report.omdb_backfill_candidates == [5]
+    assert sorted(report.omdb_backfill_candidates) == [5, 6, 7]
 
 
 def test_tag_backfill_candidates_excludes_no_mapping_rows():

@@ -90,23 +90,25 @@ def _invoke(cmd, cog, interaction):
 
 # ── /sanity omdb ────────────────────────────────────────────────────────────
 
-def test_backfill_omdb_only_touches_active_missing_rows():
-    """WATCHED, SKIPPED, and already-populated rows are left alone."""
+def test_backfill_omdb_touches_every_missing_row_regardless_of_status():
+    """Any status is fair game for OMDB backfill. Only already-populated rows skip."""
     movies = [
-        _movie(1, status=MovieStatus.STASH, omdb_data=None),       # target
-        _movie(2, status=MovieStatus.WATCHED, omdb_data=None),     # historical — skip
-        _movie(3, status=MovieStatus.SKIPPED, omdb_data=None),     # historical — skip
-        _movie(4, status=MovieStatus.STASH, omdb_data={"Title": "X"}),  # already has data
+        _movie(1, title="Stash",   status=MovieStatus.STASH,   omdb_data=None),
+        _movie(2, title="Watched", status=MovieStatus.WATCHED, omdb_data=None),
+        _movie(3, title="Skipped", status=MovieStatus.SKIPPED, omdb_data=None),
+        _movie(4, title="Has",     status=MovieStatus.STASH,   omdb_data={"Title": "X"}),
     ]
     cog, bot = _make_cog(movies, {
-        ("movie", 2020): {"Title": "Movie", "Year": "2020", "Genre": "Drama"},
+        ("stash", 2020):   {"Genre": "Drama"},
+        ("watched", 2020): {"Genre": "Drama"},
+        ("skipped", 2020): {"Genre": "Drama"},
     })
 
     _invoke(cog.sanity_omdb, cog, _fake_interaction())
 
-    assert bot.media.calls == [("Movie", 2020)]
+    assert sorted(bot.media.calls) == [("Skipped", 2020), ("Stash", 2020), ("Watched", 2020)]
     assert len(bot.storage.bulk_calls) == 1
-    assert set(bot.storage.bulk_calls[0].keys()) == {1}
+    assert set(bot.storage.bulk_calls[0].keys()) == {1, 2, 3}
 
 
 def test_backfill_omdb_writes_tags_when_row_untagged():
@@ -233,16 +235,18 @@ def test_backfill_tags_skips_active_without_omdb():
     assert bot.storage.bulk_calls == []
 
 
-def test_backfill_tags_skips_historical_movies():
+def test_backfill_tags_also_retags_historical_movies():
+    """Tag backfill now covers WATCHED and SKIPPED rows too."""
     movies = [
-        _movie(1, status=MovieStatus.WATCHED, omdb_data={"Genre": "Drama"}, tags=empty_tags()),
-        _movie(2, status=MovieStatus.SKIPPED, omdb_data={"Genre": "Drama"}, tags=empty_tags()),
+        _movie(1, title="Watched", status=MovieStatus.WATCHED, omdb_data={"Genre": "Drama"}, tags=empty_tags()),
+        _movie(2, title="Skipped", status=MovieStatus.SKIPPED, omdb_data={"Genre": "Drama"}, tags=empty_tags()),
     ]
     cog, bot = _make_cog(movies)
 
     _invoke(cog.sanity_tags, cog, _fake_interaction())
 
-    assert bot.storage.bulk_calls == []
+    assert len(bot.storage.bulk_calls) == 1
+    assert set(bot.storage.bulk_calls[0].keys()) == {1, 2}
 
 
 def test_backfill_tags_tracks_no_mapping_cases():

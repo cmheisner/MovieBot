@@ -31,10 +31,6 @@ _STATUS_PRIORITY = {
     MovieStatus.SKIPPED: 1,
 }
 
-# Movies in these statuses are historical/dismissed — don't nag about
-# missing season or tags on them unless verbose=True.
-_ACTIVE_STATUSES = {MovieStatus.STASH, MovieStatus.NOMINATED, MovieStatus.SCHEDULED}
-
 _BACKFILL_FIELDS = ("notes", "apple_tv_url", "image_url", "omdb_data", "season")
 
 
@@ -91,9 +87,9 @@ async def run_sanity_check(
     be fixed. Local bookkeeping still advances so cascading steps report
     accurately.
 
-    The active-status filter (STASH/NOMINATED/SCHEDULED) is always applied
-    to field-completeness checks — dismissed movies (WATCHED/SKIPPED) are
-    considered historical and intentionally not flagged.
+    Field-completeness checks (missing omdb_data, no poster, no tags, etc.)
+    cover ALL movies regardless of status — historical WATCHED/SKIPPED rows
+    are fair game for cleanup too.
     """
     report = SanityReport()
 
@@ -351,10 +347,9 @@ async def run_sanity_check(
         if m.season and m.season not in VALID_SEASONS:
             bad_season.append(f"id={m.id} ({m.season!r})")
 
-        # Active-only checks — historical movies (WATCHED/SKIPPED) don't get
-        # flagged for missing fields.
-        if m.status not in _ACTIVE_STATUSES:
-            continue
+        # Field-completeness checks run for every status, including
+        # WATCHED/SKIPPED. Keeps historical rows flagged so the database
+        # stays clean over time.
 
         # Backfill candidates — mirror the subcommands' selection so /sanity
         # test previews match what /sanity omdb and /sanity tags would do.
@@ -391,10 +386,10 @@ async def run_sanity_check(
     _categories: list[tuple[str, list, str]] = [
         ("missing_year", missing_year, "movie(s) missing year: ids={ids}"),
         ("invalid_status", invalid_status, "movie(s) with unrecognized status: ids={ids}"),
-        ("missing_season", missing_season, "active movie(s) missing season: ids={ids}"),
-        ("missing_tags", missing_tags, "active movie(s) missing genre tags: ids={ids}"),
-        ("missing_omdb_data", missing_omdb, "active movie(s) missing omdb_data: ids={ids}"),
-        ("missing_poster", missing_poster, "active movie(s) have no poster (Poster=N/A): ids={ids}"),
+        ("missing_season", missing_season, "movie(s) missing season: ids={ids}"),
+        ("missing_tags", missing_tags, "movie(s) missing genre tags: ids={ids}"),
+        ("missing_omdb_data", missing_omdb, "movie(s) missing omdb_data: ids={ids}"),
+        ("missing_poster", missing_poster, "movie(s) have no poster (Poster=N/A): ids={ids}"),
         ("tag_drift", tag_drift, "movie(s) with tag/OMDB drift: {ids}"),
         ("invalid_season", bad_season, "movie(s) with invalid season values: {ids}"),
         ("missing_added_at", missing_added_at, "movie(s) missing added_at: ids={ids}"),

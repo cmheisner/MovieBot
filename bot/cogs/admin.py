@@ -12,7 +12,7 @@ from discord.ext import commands
 from gspread.exceptions import APIError
 
 from bot.constants import LOG_FILE_PATH
-from bot.models.movie import MovieStatus, TAG_NAMES
+from bot.models.movie import TAG_NAMES
 from bot.utils.movie_lookup import parse_title_year
 from bot.utils.restart_notify import save_marker
 from bot.utils.runtime import git_short_sha
@@ -27,12 +27,6 @@ _DEV_STATE_CHOICES = [
 ]
 
 _SANITY_INLINE_CHAR_LIMIT = 1900
-
-_ACTIVE_STATUSES = {
-    MovieStatus.STASH,
-    MovieStatus.NOMINATED,
-    MovieStatus.SCHEDULED,
-}
 
 # Gentle throttle between OMDB fetches. Free-tier allows 1000/day; a backfill
 # of ~100 rows is well under budget but we avoid hammering the endpoint.
@@ -266,7 +260,7 @@ class AdminCog(commands.Cog, name="Admin"):
 
     @sanity.command(
         name="omdb",
-        description="[Admin] Fetch OMDB metadata for active movies that are missing it.",
+        description="[Admin] Fetch OMDB metadata for every movie missing it (all statuses).",
     )
     @app_commands.checks.has_permissions(manage_guild=True)
     async def sanity_omdb(self, interaction: discord.Interaction) -> None:
@@ -285,11 +279,11 @@ class AdminCog(commands.Cog, name="Admin"):
 
         targets = [
             m for m in all_movies
-            if m.status in _ACTIVE_STATUSES and not m.omdb_data and m.year
+            if not m.omdb_data and m.year
         ]
         skipped_no_year = sum(
             1 for m in all_movies
-            if m.status in _ACTIVE_STATUSES and not m.omdb_data and not m.year
+            if not m.omdb_data and not m.year
         )
 
         updates: dict[int, dict] = {}
@@ -339,7 +333,7 @@ class AdminCog(commands.Cog, name="Admin"):
 
         parts = [
             f"**OMDB backfill complete.**",
-            f"• Candidates (active + missing omdb_data): **{len(targets) + skipped_no_year}**",
+            f"• Candidates (any status + missing omdb_data): **{len(targets) + skipped_no_year}**",
             f"• Fetched + written: **{len(fetched)}**",
             f"• Tags also recomputed: **{len(tagged)}**",
             f"• OMDB miss (likely title typo): **{len(missed)}**",
@@ -366,7 +360,7 @@ class AdminCog(commands.Cog, name="Admin"):
 
     @sanity.command(
         name="tags",
-        description="[Admin] Recompute genre tags for active movies that have omdb_data but no tags set.",
+        description="[Admin] Recompute genre tags for every movie that has omdb_data but no tags set.",
     )
     @app_commands.checks.has_permissions(manage_guild=True)
     async def sanity_tags(self, interaction: discord.Interaction) -> None:
@@ -385,9 +379,7 @@ class AdminCog(commands.Cog, name="Admin"):
 
         targets = [
             m for m in all_movies
-            if m.status in _ACTIVE_STATUSES
-            and m.omdb_data
-            and not any(m.tags.get(t) for t in TAG_NAMES)
+            if m.omdb_data and not any(m.tags.get(t) for t in TAG_NAMES)
         ]
 
         updates: dict[int, dict] = {}
@@ -420,7 +412,7 @@ class AdminCog(commands.Cog, name="Admin"):
 
         parts = [
             f"**Tag backfill complete.**",
-            f"• Candidates (active + has omdb + no tags): **{len(targets)}**",
+            f"• Candidates (any status + has omdb + no tags): **{len(targets)}**",
             f"• Retagged: **{len(updates)}**",
             f"• Had omdb_data but no OMDB-to-tag mapping: **{len(no_mapping)}**",
         ]
