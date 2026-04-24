@@ -88,8 +88,8 @@ class HelpCog(commands.Cog, name="Help"):
                 "`/sanity compress` — [Admin] Shift movies earlier to fill gaps\n"
                 "`/sanity logs` — [Admin] Attach the bot log file\n"
                 "`/sanity restart` — [Admin] Gracefully restart the bot\n"
-                "`/sanity update` — [Admin] Pull latest code and restart\n"
-                "`/sanity dev [state]` — [Admin] Toggle dev mode (runtime only)"
+                "`/update` — [Admin] Pull latest code and restart\n"
+                "`/dev [state]` — [Admin] Toggle dev mode (runtime only)"
             ),
             inline=False,
         )

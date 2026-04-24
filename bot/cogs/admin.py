@@ -350,12 +350,12 @@ class AdminCog(commands.Cog, name="Admin"):
         await asyncio.sleep(1)
         await self.bot.close()
 
-    @sanity.command(
+    @app_commands.command(
         name="update",
         description="[Admin] Pull latest code from git then restart.",
     )
     @app_commands.checks.has_permissions(manage_guild=True)
-    async def sanity_update(self, interaction: discord.Interaction) -> None:
+    async def update(self, interaction: discord.Interaction) -> None:
         log.info("Update requested by %s (id=%d).", interaction.user, interaction.user.id)
         await interaction.response.defer(ephemeral=True)
 
@@ -374,7 +374,7 @@ class AdminCog(commands.Cog, name="Admin"):
         except FileNotFoundError:
             await interaction.followup.send(
                 "⚠️ `git` is not available in this environment. "
-                "`/sanity update` only works on bare-metal deployments — "
+                "`/update` only works on bare-metal deployments — "
                 "use `/sanity restart` instead.",
                 ephemeral=True,
             )
@@ -412,14 +412,14 @@ class AdminCog(commands.Cog, name="Admin"):
         await asyncio.sleep(1)
         await self.bot.close()
 
-    @sanity.command(
+    @app_commands.command(
         name="dev",
         description="[Admin] Toggle dev mode. Runtime-only — resets to .env on restart.",
     )
     @app_commands.describe(state="on to enable, off to disable, or leave blank to toggle.")
     @app_commands.choices(state=_DEV_STATE_CHOICES)
     @app_commands.checks.has_permissions(manage_guild=True)
-    async def sanity_dev(
+    async def dev(
         self,
         interaction: discord.Interaction,
         state: Optional[app_commands.Choice[str]] = None,
