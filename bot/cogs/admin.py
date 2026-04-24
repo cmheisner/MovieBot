@@ -287,7 +287,24 @@ class AdminCog(commands.Cog, name="Admin"):
             moves=moves,
             guild=interaction.guild,
         )
-        await interaction.followup.send(preview, view=view, ephemeral=True)
+
+        # Discord caps message content at 2000 chars; large preview lists
+        # blow past that. Fall back to a file attachment with a short summary
+        # in the body so the buttons still render. Mirrors /sanity check.
+        if len(preview) <= _SANITY_INLINE_CHAR_LIMIT:
+            await interaction.followup.send(preview, view=view, ephemeral=True)
+            return
+        buf = io.BytesIO(preview.encode("utf-8"))
+        summary = (
+            f"📦 **Compress schedule preview** — {len(moves)} movie(s) will move "
+            f"(full list attached). Confirm or cancel below."
+        )
+        await interaction.followup.send(
+            summary,
+            view=view,
+            file=discord.File(buf, filename="compress_preview.txt"),
+            ephemeral=True,
+        )
 
     @sanity.command(
         name="logs",
