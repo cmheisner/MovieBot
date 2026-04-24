@@ -332,12 +332,12 @@ class AdminCog(commands.Cog, name="Admin"):
                 f"⚠️ Could not attach log file: {exc}", ephemeral=True
             )
 
-    @sanity.command(
+    @app_commands.command(
         name="restart",
         description="[Admin] Gracefully restart the bot.",
     )
     @app_commands.checks.has_permissions(manage_guild=True)
-    async def sanity_restart(self, interaction: discord.Interaction) -> None:
+    async def restart(self, interaction: discord.Interaction) -> None:
         log.info("Restart requested by %s (id=%d).", interaction.user, interaction.user.id)
         await interaction.response.send_message(
             "Restarting... I'll be back in a few seconds. 🔄", ephemeral=True
@@ -375,7 +375,7 @@ class AdminCog(commands.Cog, name="Admin"):
             await interaction.followup.send(
                 "⚠️ `git` is not available in this environment. "
                 "`/update` only works on bare-metal deployments — "
-                "use `/sanity restart` instead.",
+                "use `/restart` instead.",
                 ephemeral=True,
             )
             return
