@@ -30,7 +30,11 @@
       "Bash(/mnt/d/Projects/MovieBot/venv/Scripts/python.exe --version)",
       "Bash(/mnt/d/Projects/MovieBot/venv/Scripts/python.exe -c \"import pytest; print\\('pytest', pytest.__version__\\)\")",
       "Bash(venv/Scripts/python.exe -m pip install pytest)",
-      "Bash(venv/Scripts/python.exe -m pytest tests/ -v)"
+      "Bash(venv/Scripts/python.exe -m pytest tests/ -v)",
+      "Bash(venv/Scripts/python.exe *)",
+      "Bash(awk -F: '$1 > 700 {print}')",
+      "Bash(awk '/2026-04-23 04:07:01/,0' \"/mnt/c/Users/Brand/Downloads/moviebot \\(5\\).log\")",
+      "Bash(awk NR>=1311 && NR<=1360 *)"
     ]
   }
 }

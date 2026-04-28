@@ -290,8 +290,8 @@ class MaintenanceCog(commands.Cog, name="Maintenance"):
                 role_mentions = build_role_mention_string(guild, movie) if guild else ""
 
                 await news_ch.send(
-                    f"🍿 **Movie Night starts in 30 minutes!** {role_mentions}Tonight we're watching "
-                    f"**{movie.display_title}**. See you in the https://discord.gg/JzZVnM76Yj 🍿"
+                    f"🍿 {role_mentions}**{movie.display_title}** starts in 30 minutes! "
+                    f"See you in the https://discord.gg/JzZVnM76Yj 🍿"
                 )
                 self._reminded_ids.add(entry.id)
                 log.info("Reminder: sent movie night reminder for %r.", movie.title)
