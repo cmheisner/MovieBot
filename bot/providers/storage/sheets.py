@@ -16,6 +16,7 @@ from bot.models.movie import Movie, MovieStatus, TAG_NAMES, empty_tags
 from bot.models.poll import Poll, PollEntry, PollStatus
 from bot.models.schedule_entry import ScheduleEntry
 from bot.providers.storage.base import StorageProvider
+from bot.utils.strings import DEFAULT_BOT_STRINGS
 
 log = logging.getLogger(__name__)
 
@@ -26,7 +27,7 @@ SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 DEFAULT_MOVIE_HEADERS = [
     "id", "title", "year", "notes", "status",
     "apple_tv_url", "image_url", "added_by", "added_by_id", "added_at", "omdb_data",
-    "season", *TAG_NAMES,
+    "season", "thanks_for_watching_override", *TAG_NAMES,
 ]
 DEFAULT_POLL_HEADERS = [
     "id", "discord_msg_id", "channel_id", "created_at", "closes_at",
@@ -37,7 +38,7 @@ DEFAULT_SCHEDULE_HEADERS = [
     "id", "movie_id", "poll_id", "scheduled_for", "discord_event_id",
     "posted_msg_id", "created_at",
 ]
-DEFAULT_TZ_HEADERS = ["user_id", "tz_name"]
+DEFAULT_BOT_STRINGS_HEADERS = ["key", "value", "description"]
 
 _CACHE_TTL = 60  # seconds — direct Sheets edits are visible within this window
 
@@ -184,9 +185,10 @@ class GoogleSheetsStorageProvider(StorageProvider):
             self._worksheets["polls"] = self._ensure_sheet("polls", DEFAULT_POLL_HEADERS)
             self._worksheets["poll_entries"] = self._ensure_sheet("poll_entries", DEFAULT_POLL_ENTRY_HEADERS)
             self._worksheets["schedule_entries"] = self._ensure_sheet("schedule_entries", DEFAULT_SCHEDULE_HEADERS)
-            self._worksheets["user_timezones"] = self._ensure_sheet("user_timezones", DEFAULT_TZ_HEADERS)
-            for name in ("movies", "polls", "poll_entries", "schedule_entries", "user_timezones"):
+            self._worksheets["bot_strings"] = self._ensure_sheet("bot_strings", DEFAULT_BOT_STRINGS_HEADERS)
+            for name in ("movies", "polls", "poll_entries", "schedule_entries", "bot_strings"):
                 self._load_header_map(name)
+            self._seed_bot_strings()
             log.info("Sheets: loaded header maps: %s", {k: list(v.keys()) for k, v in self._cols.items()})
 
         attempts = (0.0, *_INIT_RETRY_DELAYS)
@@ -289,6 +291,7 @@ class GoogleSheetsStorageProvider(StorageProvider):
             status=self._get(r, "movies", "status") or MovieStatus.STASH,
             omdb_data=omdb,
             season=_opt(self._get(r, "movies", "season")),
+            thanks_for_watching_override=_opt(self._get(r, "movies", "thanks_for_watching_override")),
             tags=tags,
         )
 
@@ -504,7 +507,7 @@ class GoogleSheetsStorageProvider(StorageProvider):
         return await asyncio.to_thread(_do)
 
     async def update_movie(self, movie_id: int, **fields) -> Movie:
-        allowed = {"title", "year", "notes", "apple_tv_url", "image_url", "status", "omdb_data", "season", "tags"}
+        allowed = {"title", "year", "notes", "apple_tv_url", "image_url", "status", "omdb_data", "season", "thanks_for_watching_override", "tags"}
         update_fields = {k: v for k, v in fields.items() if k in allowed}
 
         # Flatten tags dict into per-column updates.
@@ -536,7 +539,7 @@ class GoogleSheetsStorageProvider(StorageProvider):
         if not updates:
             return
 
-        allowed = {"title", "year", "notes", "apple_tv_url", "image_url", "status", "omdb_data", "season", "tags"}
+        allowed = {"title", "year", "notes", "apple_tv_url", "image_url", "status", "omdb_data", "season", "thanks_for_watching_override", "tags"}
 
         # Normalize each entry: filter to allowed fields, flatten tags dict,
         # jsonify omdb_data. Matches update_movie's per-entry normalization.
@@ -965,35 +968,45 @@ class GoogleSheetsStorageProvider(StorageProvider):
 
         return await asyncio.to_thread(_do)
 
-    # ── User Preferences ─────────────────────────────────────────────────
+    # ── Bot Strings ──────────────────────────────────────────────────────
 
-    async def set_user_timezone(self, user_id: str, tz_name: str) -> None:
+    def _seed_bot_strings(self) -> None:
+        """Append default rows for keys missing from the bot_strings tab.
+
+        Runs synchronously inside ``initialize``'s ``_init`` thread. Edited
+        values are preserved — only absent keys get inserted, so the seed is
+        idempotent across restarts.
+        """
+        ws = self._ws("bot_strings")
+        rows = _retry_call(ws.get_all_values)[1:]
+        key_col = self._cols["bot_strings"].get("key", 0)
+        existing_keys = {r[key_col] for r in rows if r and key_col < len(r) and r[key_col]}
+
+        missing = [(k, v, d) for (k, v, d) in DEFAULT_BOT_STRINGS if k not in existing_keys]
+        if not missing:
+            return
+
+        new_rows = [
+            self._pack_row("bot_strings", {"key": k, "value": v, "description": d})
+            for (k, v, d) in missing
+        ]
+        _retry_call(ws.append_rows, new_rows, value_input_option="RAW")
+        self._cache.drop("bot_strings")
+        log.info("Sheets: seeded %d default bot_strings row(s).", len(missing))
+
+    async def get_bot_strings(self) -> dict[str, str]:
         def _do():
-            ws = self._ws("user_timezones")
-            user_col = self._cols["user_timezones"].get("user_id", 0)
-            tz_col = self._cols["user_timezones"].get("tz_name", 1)
-            all_rows = _retry_call(ws.get_all_values)
-            for i, r in enumerate(all_rows[1:], start=2):
-                if r and user_col < len(r) and r[user_col] == user_id:
-                    _retry_call(ws.update_cell, i, tz_col + 1, tz_name)
-                    self._cache.drop("user_timezones")
-                    return
-            _retry_call(
-                ws.append_row,
-                self._pack_row("user_timezones", {"user_id": user_id, "tz_name": tz_name}),
-                value_input_option="RAW",
-            )
-            self._cache.drop("user_timezones")
-
-        await asyncio.to_thread(_do)
-
-    async def get_user_timezone(self, user_id: str) -> Optional[str]:
-        def _do():
-            user_col = self._cols["user_timezones"].get("user_id", 0)
-            tz_col = self._cols["user_timezones"].get("tz_name", 1)
-            for r in self._rows("user_timezones"):
-                if r and user_col < len(r) and r[user_col] == user_id and tz_col < len(r):
-                    return r[tz_col]
-            return None
+            key_col = self._cols["bot_strings"].get("key", 0)
+            val_col = self._cols["bot_strings"].get("value", 1)
+            result: dict[str, str] = {}
+            for r in self._rows("bot_strings"):
+                if not r or key_col >= len(r):
+                    continue
+                key = r[key_col]
+                val = r[val_col] if val_col < len(r) else ""
+                if key and val:
+                    result[key] = val
+            return result
 
         return await asyncio.to_thread(_do)
+

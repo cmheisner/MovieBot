@@ -157,12 +157,13 @@ class StorageProvider(ABC):
         """Return watched movies paired with their scheduled_for date, newest first."""
         pass
 
-    # ── User Preferences ─────────────────────────────────────────────────
+    # ── Bot Strings ──────────────────────────────────────────────────────
 
     @abstractmethod
-    async def set_user_timezone(self, user_id: str, tz_name: str) -> None:
+    async def get_bot_strings(self) -> dict[str, str]:
+        """Return all key→value entries from the bot_strings tab/table.
+
+        Empty values are skipped so the caller falls back to hardcoded defaults.
+        """
         pass
 
-    @abstractmethod
-    async def get_user_timezone(self, user_id: str) -> Optional[str]:
-        pass

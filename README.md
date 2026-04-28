@@ -191,7 +191,7 @@ GOOGLE_SHEETS_ID=<the ID from your spreadsheet URL>
 GOOGLE_SERVICE_ACCOUNT_PATH=credentials.json
 ```
 
-On first run the bot automatically creates all required tabs (`movies`, `schedule_entries`, `polls`, `poll_entries`, `user_timezones`).
+On first run the bot automatically creates all required tabs (`movies`, `schedule_entries`, `polls`, `poll_entries`, `bot_strings`). The `bot_strings` tab is seeded with default text for every automated bot announcement (movie-night reminder, "thanks for watching", schedule announcement, poll announcement, post-restart message); edit the `value` column in Sheets to customize them. Each row's `description` column lists the available `{placeholder}` variables.
 
 > **Editing directly in Sheets:** It's safe to edit `notes` and `group_name` in the `movies` tab. Avoid editing `id`, `status`, `omdb_data`, or any column in the other tabs.
 

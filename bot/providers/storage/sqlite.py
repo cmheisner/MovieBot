@@ -11,24 +11,26 @@ from bot.models.movie import Movie, MovieStatus
 from bot.models.poll import Poll, PollEntry
 from bot.models.schedule_entry import ScheduleEntry
 from bot.providers.storage.base import StorageProvider
+from bot.utils.strings import DEFAULT_BOT_STRINGS
 
 SCHEMA = """
 PRAGMA journal_mode = WAL;
 PRAGMA foreign_keys = ON;
 
 CREATE TABLE IF NOT EXISTS movies (
-    id           INTEGER PRIMARY KEY AUTOINCREMENT,
-    title        TEXT    NOT NULL,
-    year         INTEGER NOT NULL,
-    notes        TEXT,
-    apple_tv_url TEXT,
-    image_url    TEXT,
-    added_by     TEXT    NOT NULL,
-    added_by_id  TEXT    NOT NULL,
-    added_at     TEXT    NOT NULL,
-    status       TEXT    NOT NULL DEFAULT 'stash',
-    omdb_data    TEXT,
-    season       TEXT,
+    id                            INTEGER PRIMARY KEY AUTOINCREMENT,
+    title                         TEXT    NOT NULL,
+    year                          INTEGER NOT NULL,
+    notes                         TEXT,
+    apple_tv_url                  TEXT,
+    image_url                     TEXT,
+    added_by                      TEXT    NOT NULL,
+    added_by_id                   TEXT    NOT NULL,
+    added_at                      TEXT    NOT NULL,
+    status                        TEXT    NOT NULL DEFAULT 'stash',
+    omdb_data                     TEXT,
+    season                        TEXT,
+    thanks_for_watching_override  TEXT,
     UNIQUE (title, year)
 );
 
@@ -64,9 +66,10 @@ CREATE TABLE IF NOT EXISTS schedule_entries (
     UNIQUE (movie_id)
 );
 
-CREATE TABLE IF NOT EXISTS user_timezones (
-    user_id  TEXT PRIMARY KEY,
-    tz_name  TEXT NOT NULL
+CREATE TABLE IF NOT EXISTS bot_strings (
+    key         TEXT PRIMARY KEY,
+    value       TEXT NOT NULL,
+    description TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_movies_status  ON movies (status);
@@ -87,6 +90,10 @@ def _parse_dt(s: Optional[str]) -> Optional[datetime]:
 
 def _row_to_movie(row: aiosqlite.Row) -> Movie:
     omdb = json.loads(row["omdb_data"]) if row["omdb_data"] else None
+    # Migrated columns may be absent on rows queried before the schema was upgraded
+    # in-process, but aiosqlite.Row exposes them once the ALTER landed. Fall back
+    # to None defensively.
+    keys = row.keys()
     return Movie(
         id=row["id"],
         title=row["title"],
@@ -100,6 +107,7 @@ def _row_to_movie(row: aiosqlite.Row) -> Movie:
         image_url=row["image_url"],
         omdb_data=omdb,
         season=row["season"],
+        thanks_for_watching_override=row["thanks_for_watching_override"] if "thanks_for_watching_override" in keys else None,
     )
 
 
@@ -159,6 +167,21 @@ class SQLiteStorageProvider(StorageProvider):
             await self._db.commit()
         except aiosqlite.OperationalError:
             pass  # Column already exists
+        # Migration: add per-movie thanks_for_watching_override (overrides the
+        # global bot_strings default for the post-event #news message).
+        try:
+            await self._db.execute("ALTER TABLE movies ADD COLUMN thanks_for_watching_override TEXT")
+            await self._db.commit()
+        except aiosqlite.OperationalError:
+            pass  # Column already exists
+
+        # Seed bot_strings with defaults for keys that aren't already present.
+        # INSERT OR IGNORE means user-edited values are preserved across restarts.
+        await self._db.executemany(
+            "INSERT OR IGNORE INTO bot_strings (key, value, description) VALUES (?, ?, ?)",
+            DEFAULT_BOT_STRINGS,
+        )
+        await self._db.commit()
 
     async def close(self) -> None:
         if self._db:
@@ -250,7 +273,7 @@ class SQLiteStorageProvider(StorageProvider):
         return [_row_to_movie(r) for r in rows]
 
     async def update_movie(self, movie_id: int, **fields) -> Movie:
-        allowed = {"title", "year", "notes", "apple_tv_url", "image_url", "status", "omdb_data", "season"}
+        allowed = {"title", "year", "notes", "apple_tv_url", "image_url", "status", "omdb_data", "season", "thanks_for_watching_override"}
         # tags are ignored in sqlite (dev-only fallback; prod uses Sheets).
         fields.pop("tags", None)
         update_fields = {k: v for k, v in fields.items() if k in allowed}
@@ -489,18 +512,10 @@ class SQLiteStorageProvider(StorageProvider):
             result.append((movie, sched))
         return result
 
-    # ── User Preferences ─────────────────────────────────────────────────
+    # ── Bot Strings ──────────────────────────────────────────────────────
 
-    async def set_user_timezone(self, user_id: str, tz_name: str) -> None:
-        await self._db.execute(
-            "INSERT OR REPLACE INTO user_timezones (user_id, tz_name) VALUES (?, ?)",
-            (user_id, tz_name),
-        )
-        await self._db.commit()
+    async def get_bot_strings(self) -> dict[str, str]:
+        async with self._db.execute("SELECT key, value FROM bot_strings") as cur:
+            rows = await cur.fetchall()
+        return {r["key"]: r["value"] for r in rows if r["value"]}
 
-    async def get_user_timezone(self, user_id: str) -> Optional[str]:
-        async with self._db.execute(
-            "SELECT tz_name FROM user_timezones WHERE user_id = ?", (user_id,)
-        ) as cur:
-            row = await cur.fetchone()
-        return row["tz_name"] if row else None

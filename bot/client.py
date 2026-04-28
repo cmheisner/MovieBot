@@ -10,6 +10,7 @@ from bot.config import BotConfig
 from bot.providers.media.omdb import OMDBMetadataProvider, NoOpMetadataProvider
 from bot.providers.media.plex import PlexClient, NoOpPlexClient
 from bot.providers.storage.sqlite import SQLiteStorageProvider
+from bot.utils import strings
 from bot.utils.permissions import user_has_staff_role
 from bot.utils.restart_notify import count_errors_since, load_and_clear_marker
 from bot.utils.runtime import git_short_sha
@@ -28,6 +29,7 @@ COGS = [
     "bot.cogs.help",
     "bot.cogs.admin",
 ]
+
 
 
 class DevModeTree(app_commands.CommandTree):
@@ -108,6 +110,7 @@ class MovieBotClient(commands.Bot):
 
     async def setup_hook(self) -> None:
         await self.storage.initialize()
+        strings.attach_storage(self.storage)
         backend = self.config.storage_backend
         if backend == "sheets":
             log.info("Storage initialized: Google Sheets (id=%s)", self.config.google_sheets_id)
@@ -160,14 +163,16 @@ class MovieBotClient(commands.Bot):
         verb = "updated and restarted" if kind == "update" else "restarted"
         mention = f"<@{int(user_id)}> " if user_id else ""
         if errors:
-            plural = "s" if errors != 1 else ""
-            msg = (
-                f"{mention}⚠️ MovieBot {verb} — back online with "
-                f"**{errors} error{plural}** during startup. "
-                f"Run `/logs level:error` to view. (HEAD: {sha})"
+            errors_phrase = f"{errors} error{'s' if errors != 1 else ''}"
+            msg = await strings.get(
+                "bot_back_online_with_errors",
+                mention=mention, verb=verb, errors_phrase=errors_phrase, sha=sha,
             )
         else:
-            msg = f"{mention}✅ MovieBot {verb} — back online. (HEAD: {sha})"
+            msg = await strings.get(
+                "bot_back_online",
+                mention=mention, verb=verb, sha=sha,
+            )
 
         channel = self.get_channel(channel_id)
         if channel is None:

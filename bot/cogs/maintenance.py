@@ -18,6 +18,7 @@ from bot.utils.refresh_state import (
     load_fingerprint,
     save_fingerprint,
 )
+from bot.utils import strings
 from bot.utils.time_utils import format_dt_eastern
 
 log = logging.getLogger(__name__)
@@ -290,8 +291,11 @@ class MaintenanceCog(commands.Cog, name="Maintenance"):
                 role_mentions = build_role_mention_string(guild, movie) if guild else ""
 
                 await news_ch.send(
-                    f"🍿 {role_mentions}**{movie.display_title}** starts in 30 minutes! "
-                    f"See you in the https://discord.gg/JzZVnM76Yj 🍿"
+                    await strings.get(
+                        "movie_night_reminder",
+                        role_mentions=role_mentions,
+                        movie=movie.display_title,
+                    )
                 )
                 self._reminded_ids.add(entry.id)
                 log.info("Reminder: sent movie night reminder for %r.", movie.title)
@@ -717,7 +721,12 @@ class MaintenanceCog(commands.Cog, name="Maintenance"):
             role_mentions = build_role_mention_string(guild, movie) if guild else ""
 
             date_str = format_dt_eastern(scheduled_for)
-            msg = f"{role_mentions}🎬 **{movie.display_title}** has been added to Movie Night! Scheduled for **{date_str}**."
+            msg = await strings.get(
+                "schedule_announcement",
+                role_mentions=role_mentions,
+                movie=movie.display_title,
+                date=date_str,
+            )
             try:
                 await news_ch.send(msg)
             except Exception as exc:
@@ -748,14 +757,25 @@ class MaintenanceCog(commands.Cog, name="Maintenance"):
             await self.bot.storage.delete_schedule_entry(entry.id)
             log.info("Event end: marked %r as watched via on_scheduled_event_update.", movie.title)
 
-            # Post to #news
+            # Post to #news. Per-movie override in `thanks_for_watching_override`
+            # takes precedence over the global bot_strings template.
             news_ch = self.bot.get_channel(self.bot.config.news_channel_id)
             if news_ch:
                 try:
-                    await news_ch.send(
-                        f"🍿 Thanks for watching **{movie.display_title}** tonight! "
-                        f"Hope you enjoyed it. 🎬"
-                    )
+                    override = movie.thanks_for_watching_override
+                    if override:
+                        try:
+                            msg = override.format(movie=movie.display_title)
+                        except (KeyError, IndexError) as fmt_exc:
+                            log.warning(
+                                "Event end: thanks_for_watching_override for movie id=%s "
+                                "failed to format (%s); falling back to default.",
+                                movie.id, fmt_exc,
+                            )
+                            msg = await strings.get("thanks_for_watching", movie=movie.display_title)
+                    else:
+                        msg = await strings.get("thanks_for_watching", movie=movie.display_title)
+                    await news_ch.send(msg)
                 except Exception as exc:
                     log.warning("Event end: could not post to #news: %s", exc)
 
@@ -780,7 +800,7 @@ class MaintenanceCog(commands.Cog, name="Maintenance"):
             return
         try:
             await news_ch.send(
-                f"🗳️ A new poll is live! Head to {general_ch.mention} to vote for the next Movie Night pick."
+                await strings.get("poll_announcement", general_channel=general_ch.mention)
             )
         except Exception as exc:
             log.error("Poll announcement: failed to post: %s", exc)

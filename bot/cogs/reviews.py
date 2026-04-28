@@ -8,7 +8,7 @@ from discord.ext import commands
 from gspread.exceptions import APIError
 
 from bot.models.movie import MovieStatus
-from bot.providers.media.imdb_reviews import fetch_reviews, _make_slug
+from bot.providers.media.metacritic_reviews import fetch_reviews, _make_slug
 from bot.utils.movie_lookup import autocomplete_movies, resolve_movie_by_id
 
 log = logging.getLogger(__name__)

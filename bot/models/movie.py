@@ -34,6 +34,7 @@ class Movie:
     image_url: Optional[str] = None
     omdb_data: Optional[dict] = None
     season: Optional[str] = None
+    thanks_for_watching_override: Optional[str] = None
     tags: dict[str, bool] = field(default_factory=empty_tags)
 
     @property
