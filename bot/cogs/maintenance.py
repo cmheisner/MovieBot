@@ -551,10 +551,11 @@ class MaintenanceCog(commands.Cog, name="Maintenance"):
                 log.warning("Stash refresh: could not delete old message %d: %s", msg.id, exc)
 
         try:
-            # Discord allows up to 10 embeds per message. Split into batches
-            # if the stash ever grows past that cap.
-            for i in range(0, len(embeds), 10):
-                await channel.send(embeds=embeds[i:i + 10])
+            # One embed per message. Discord caps cumulative embed payload at
+            # 6000 chars per message, so two ~3800-char description chunks
+            # bundled together get rejected even though each one fits alone.
+            for embed in embeds:
+                await channel.send(embed=embed)
             save_fingerprint("stash", fingerprint)
             log.info(
                 "Stash refresh: posted stash list (%d movies, %d embed(s)) to #stash.",
@@ -701,7 +702,8 @@ class MaintenanceCog(commands.Cog, name="Maintenance"):
                 log.warning("Schedule refresh: could not delete old message %d: %s", msg.id, exc)
 
         try:
-            await channel.send(embeds=all_embeds)
+            for embed in all_embeds:
+                await channel.send(embed=embed)
             save_fingerprint("schedule", fingerprint)
             log.info("Schedule refresh: posted %d embed(s) to #schedule.", len(all_embeds))
         except Exception as exc:
