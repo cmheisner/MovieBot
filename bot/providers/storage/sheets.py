@@ -355,6 +355,7 @@ class GoogleSheetsStorageProvider(StorageProvider):
         season=None,
         status=None,
         tags: Optional[dict[str, bool]] = None,
+        _id_override: Optional[int] = None,
     ) -> Movie:
         def _do() -> int:
             ws = self._ws("movies")
@@ -407,7 +408,7 @@ class GoogleSheetsStorageProvider(StorageProvider):
                     raise ValueError(
                         f"{title!r} ({year}) already exists (id={existing_id}, status={existing_status})."
                     )
-            new_id = self._next_id("movies", rows)
+            new_id = _id_override if _id_override is not None else self._next_id("movies", rows)
             now = _now_iso()
             tag_vals = tags or empty_tags()
             values = {
@@ -614,13 +615,15 @@ class GoogleSheetsStorageProvider(StorageProvider):
         message_ids: list[str],
         closes_at: Optional[datetime] = None,
         target_date: Optional[datetime] = None,
+        _id_override: Optional[int] = None,
+        _entry_id_overrides: Optional[list[int]] = None,
     ) -> Poll:
         def _do() -> int:
             ws_polls = self._ws("polls")
             ws_entries = self._ws("poll_entries")
             poll_rows = _retry_call(ws_polls.get_all_values)[1:]
             entry_rows = _retry_call(ws_entries.get_all_values)[1:]
-            poll_id = self._next_id("polls", poll_rows)
+            poll_id = _id_override if _id_override is not None else self._next_id("polls", poll_rows)
             entry_id = self._next_id("poll_entries", entry_rows)
             now = _now_iso()
             poll_values = {
@@ -635,8 +638,13 @@ class GoogleSheetsStorageProvider(StorageProvider):
             }
             _retry_call(ws_polls.append_row, self._pack_row("polls", poll_values), value_input_option="RAW")
             for pos, (movie_id, emoji, msg_id) in enumerate(zip(movie_ids, emojis, message_ids), start=1):
+                this_entry_id = (
+                    _entry_id_overrides[pos - 1]
+                    if _entry_id_overrides is not None
+                    else entry_id
+                )
                 entry_values = {
-                    "id": entry_id,
+                    "id": this_entry_id,
                     "poll_id": poll_id,
                     "movie_id": movie_id,
                     "position": pos,
@@ -644,7 +652,8 @@ class GoogleSheetsStorageProvider(StorageProvider):
                     "message_id": msg_id,
                 }
                 _retry_call(ws_entries.append_row, self._pack_row("poll_entries", entry_values), value_input_option="RAW")
-                entry_id += 1
+                if _entry_id_overrides is None:
+                    entry_id += 1
             self._cache.drop("polls")
             self._cache.drop("poll_entries")
             return poll_id
@@ -782,6 +791,7 @@ class GoogleSheetsStorageProvider(StorageProvider):
         movie_id: int,
         scheduled_for: datetime,
         poll_id: Optional[int] = None,
+        _id_override: Optional[int] = None,
     ) -> ScheduleEntry:
         def _do() -> int:
             ws = self._ws("schedule_entries")
@@ -791,7 +801,7 @@ class GoogleSheetsStorageProvider(StorageProvider):
                 for r in rows:
                     if r and movie_col < len(r) and r[movie_col] == str(movie_id):
                         raise ValueError(f"Movie id={movie_id} is already scheduled.")
-            new_id = self._next_id("schedule_entries", rows)
+            new_id = _id_override if _id_override is not None else self._next_id("schedule_entries", rows)
             values = {
                 "id": new_id,
                 "movie_id": movie_id,
@@ -1045,4 +1055,24 @@ class GoogleSheetsStorageProvider(StorageProvider):
             return result
 
         return await asyncio.to_thread(_do)
+
+    async def set_bot_string(self, key: str, value: str) -> None:
+        def _do():
+            ws = self._ws("bot_strings")
+            key_col = self._cols["bot_strings"].get("key", 0)
+            value_col_idx = self._col_idx("bot_strings", "value")
+            all_rows = _retry_call(ws.get_all_values)
+            for i, r in enumerate(all_rows[1:], start=2):
+                if r and key_col < len(r) and r[key_col] == key:
+                    if value_col_idx is not None:
+                        _retry_call(ws.update_cell, i, value_col_idx, _to_str(value))
+                    self._cache.drop("bot_strings")
+                    return
+            # Key absent — append a fresh row. Description left blank; the
+            # init-time seed will backfill it for known keys on next restart.
+            row = self._pack_row("bot_strings", {"key": key, "value": value, "description": ""})
+            _retry_call(ws.append_row, row, value_input_option="RAW")
+            self._cache.drop("bot_strings")
+
+        await asyncio.to_thread(_do)
 

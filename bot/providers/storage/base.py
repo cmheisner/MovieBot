@@ -30,8 +30,14 @@ class StorageProvider(ABC):
         season: Optional[str] = None,
         status: Optional[str] = None,
         tags: Optional[dict[str, bool]] = None,
+        _id_override: Optional[int] = None,
     ) -> Movie:
-        """Insert a new movie; raises ValueError on duplicate (title, year)."""
+        """Insert a new movie; raises ValueError on duplicate (title, year).
+
+        ``_id_override`` is an internal-use hook for the dual-write provider
+        and the migration script — when set, the new row gets that exact id
+        instead of an auto-increment. Callers from cog code never pass it.
+        """
 
     @abstractmethod
     async def get_movie(self, movie_id: int) -> Optional[Movie]:
@@ -80,8 +86,15 @@ class StorageProvider(ABC):
         message_ids: list[str],
         closes_at: Optional[datetime] = None,
         target_date: Optional[datetime] = None,
+        _id_override: Optional[int] = None,
+        _entry_id_overrides: Optional[list[int]] = None,
     ) -> Poll:
-        pass
+        """Add a poll plus one entry per movie_id.
+
+        ``_id_override`` pins the poll id; ``_entry_id_overrides`` (same length
+        as ``movie_ids`` when provided) pins each entry id. Both are internal
+        for dual-write / migration — cog code never passes them.
+        """
 
     @abstractmethod
     async def get_poll(self, poll_id: int) -> Optional[Poll]:
@@ -119,8 +132,13 @@ class StorageProvider(ABC):
         movie_id: int,
         scheduled_for: datetime,
         poll_id: Optional[int] = None,
+        _id_override: Optional[int] = None,
     ) -> ScheduleEntry:
-        """Raises ValueError if movie_id already has a schedule entry."""
+        """Raises ValueError if movie_id already has a schedule entry.
+
+        ``_id_override`` pins the new row's id (internal-use, dual-write /
+        migration).
+        """
 
     @abstractmethod
     async def get_schedule_entry(self, entry_id: int) -> Optional[ScheduleEntry]:
@@ -165,6 +183,16 @@ class StorageProvider(ABC):
         """Return all key→value entries from the bot_strings tab/table.
 
         Empty values are skipped so the caller falls back to hardcoded defaults.
+        """
+        pass
+
+    @abstractmethod
+    async def set_bot_string(self, key: str, value: str) -> None:
+        """Set or update a single bot_string. Upserts: if key exists, value is replaced.
+
+        The ``description`` column is preserved on update; on insert a new row
+        is created with an empty description (the seed pass on next startup
+        fills it in for known keys via INSERT OR IGNORE).
         """
         pass
 

@@ -7,7 +7,7 @@ from typing import Optional
 
 import aiosqlite
 
-from bot.models.movie import Movie, MovieStatus
+from bot.models.movie import Movie, MovieStatus, TAG_NAMES, empty_tags
 from bot.models.poll import Poll, PollEntry
 from bot.models.schedule_entry import ScheduleEntry
 from bot.providers.storage.base import StorageProvider
@@ -31,6 +31,14 @@ CREATE TABLE IF NOT EXISTS movies (
     omdb_data                     TEXT,
     season                        TEXT,
     thanks_for_watching_override  TEXT,
+    drama                         INTEGER NOT NULL DEFAULT 0,
+    comedy                        INTEGER NOT NULL DEFAULT 0,
+    action                        INTEGER NOT NULL DEFAULT 0,
+    horror                        INTEGER NOT NULL DEFAULT 0,
+    thriller                      INTEGER NOT NULL DEFAULT 0,
+    scifi                         INTEGER NOT NULL DEFAULT 0,
+    romance                       INTEGER NOT NULL DEFAULT 0,
+    family                        INTEGER NOT NULL DEFAULT 0,
     UNIQUE (title, year)
 );
 
@@ -95,6 +103,10 @@ def _row_to_movie(row: aiosqlite.Row) -> Movie:
     # in-process, but aiosqlite.Row exposes them once the ALTER landed. Fall back
     # to None defensively.
     keys = row.keys()
+    tags = empty_tags()
+    for name in TAG_NAMES:
+        if name in keys:
+            tags[name] = bool(row[name])
     return Movie(
         id=row["id"],
         title=row["title"],
@@ -109,6 +121,7 @@ def _row_to_movie(row: aiosqlite.Row) -> Movie:
         omdb_data=omdb,
         season=row["season"],
         thanks_for_watching_override=row["thanks_for_watching_override"] if "thanks_for_watching_override" in keys else None,
+        tags=tags,
     )
 
 
@@ -182,6 +195,14 @@ class SQLiteStorageProvider(StorageProvider):
             await self._db.commit()
         except aiosqlite.OperationalError:
             pass  # Column already exists
+        # Migration: genre tag columns (stored as 0/1 ints). Used by #news genre
+        # role pings and sanity checks. One ALTER per tag — they're independent.
+        for tag in TAG_NAMES:
+            try:
+                await self._db.execute(f"ALTER TABLE movies ADD COLUMN {tag} INTEGER NOT NULL DEFAULT 0")
+                await self._db.commit()
+            except aiosqlite.OperationalError:
+                pass  # Column already exists
 
         # Seed bot_strings with defaults for keys that aren't already present.
         # INSERT OR IGNORE means user-edited values are preserved across restarts.
@@ -210,24 +231,28 @@ class SQLiteStorageProvider(StorageProvider):
         season=None,
         status=None,
         tags: Optional[dict[str, bool]] = None,
+        _id_override: Optional[int] = None,
     ) -> Movie:
         existing = await self.get_movie_by_title_year(title, year)
         omdb_json = json.dumps(omdb_data) if omdb_data else None
         now = _now_iso()
         insert_status = status or MovieStatus.STASH
+        tag_values = tags if tags is not None else empty_tags()
+        tag_ints = [1 if tag_values.get(name) else 0 for name in TAG_NAMES]
 
         if existing:
             if existing.status == MovieStatus.SKIPPED:
                 # Resurrect in place: new adder takes ownership, metadata
                 # refreshes, status returns to STASH. Preserves id.
+                tag_set_clause = ", ".join(f"{name} = ?" for name in TAG_NAMES)
                 await self._db.execute(
-                    """
+                    f"""
                     UPDATE movies
                     SET notes = ?, added_by = ?, added_by_id = ?, added_at = ?,
-                        status = ?, omdb_data = ?, season = ?
+                        status = ?, omdb_data = ?, season = ?, {tag_set_clause}
                     WHERE id = ?
                     """,
-                    (notes, added_by, added_by_id, now, insert_status, omdb_json, season, existing.id),
+                    (notes, added_by, added_by_id, now, insert_status, omdb_json, season, *tag_ints, existing.id),
                 )
                 await self._db.commit()
                 return await self.get_movie(existing.id)
@@ -235,15 +260,30 @@ class SQLiteStorageProvider(StorageProvider):
                 f"{title!r} ({year}) already exists (id={existing.id}, status={existing.status})."
             )
 
-        async with self._db.execute(
-            """
-            INSERT INTO movies (title, year, notes, apple_tv_url, image_url,
-                                added_by, added_by_id, added_at, status, omdb_data, season)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (title, year, notes, apple_tv_url, image_url, added_by, added_by_id, now, insert_status, omdb_json, season),
-        ) as cur:
-            movie_id = cur.lastrowid
+        tag_cols = ", ".join(TAG_NAMES)
+        tag_placeholders = ", ".join("?" for _ in TAG_NAMES)
+        if _id_override is not None:
+            async with self._db.execute(
+                f"""
+                INSERT INTO movies (id, title, year, notes, apple_tv_url, image_url,
+                                    added_by, added_by_id, added_at, status, omdb_data, season,
+                                    {tag_cols})
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, {tag_placeholders})
+                """,
+                (_id_override, title, year, notes, apple_tv_url, image_url, added_by, added_by_id, now, insert_status, omdb_json, season, *tag_ints),
+            ) as cur:
+                movie_id = cur.lastrowid
+        else:
+            async with self._db.execute(
+                f"""
+                INSERT INTO movies (title, year, notes, apple_tv_url, image_url,
+                                    added_by, added_by_id, added_at, status, omdb_data, season,
+                                    {tag_cols})
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, {tag_placeholders})
+                """,
+                (title, year, notes, apple_tv_url, image_url, added_by, added_by_id, now, insert_status, omdb_json, season, *tag_ints),
+            ) as cur:
+                movie_id = cur.lastrowid
         await self._db.commit()
         return await self.get_movie(movie_id)
 
@@ -281,12 +321,26 @@ class SQLiteStorageProvider(StorageProvider):
         return [_row_to_movie(r) for r in rows]
 
     async def update_movie(self, movie_id: int, **fields) -> Movie:
-        allowed = {"title", "year", "notes", "apple_tv_url", "image_url", "status", "omdb_data", "season", "thanks_for_watching_override"}
-        # tags are ignored in sqlite (dev-only fallback; prod uses Sheets).
-        fields.pop("tags", None)
+        allowed = {"title", "year", "notes", "apple_tv_url", "image_url", "status", "omdb_data", "season", "thanks_for_watching_override", "tags", *TAG_NAMES}
         update_fields = {k: v for k, v in fields.items() if k in allowed}
+
+        # Flatten tags dict into per-column updates (matches Sheets provider).
+        tag_updates = update_fields.pop("tags", None)
+        if tag_updates:
+            for name in TAG_NAMES:
+                if name in tag_updates:
+                    update_fields[name] = 1 if tag_updates[name] else 0
+
+        # Coerce any direct per-column tag writes to 0/1 ints too.
+        for name in TAG_NAMES:
+            if name in update_fields:
+                update_fields[name] = 1 if update_fields[name] else 0
+
         if "omdb_data" in update_fields and isinstance(update_fields["omdb_data"], dict):
             update_fields["omdb_data"] = json.dumps(update_fields["omdb_data"])
+
+        if not update_fields:
+            return await self.get_movie(movie_id)
 
         set_clause = ", ".join(f"{k} = ?" for k in update_fields)
         values = list(update_fields.values()) + [movie_id]
@@ -321,24 +375,42 @@ class SQLiteStorageProvider(StorageProvider):
         message_ids: list[str],
         closes_at: Optional[datetime] = None,
         target_date: Optional[datetime] = None,
+        _id_override: Optional[int] = None,
+        _entry_id_overrides: Optional[list[int]] = None,
     ) -> Poll:
         now = _now_iso()
         closes_iso = closes_at.isoformat() if closes_at else None
         target_iso = target_date.isoformat() if target_date else None
-        async with self._db.execute(
-            """
-            INSERT INTO polls (discord_msg_id, channel_id, created_at, closes_at, status, target_date)
-            VALUES (?, ?, ?, ?, 'open', ?)
-            """,
-            (discord_msg_id, channel_id, now, closes_iso, target_iso),
-        ) as cur:
-            poll_id = cur.lastrowid
+        if _id_override is not None:
+            async with self._db.execute(
+                """
+                INSERT INTO polls (id, discord_msg_id, channel_id, created_at, closes_at, status, target_date)
+                VALUES (?, ?, ?, ?, ?, 'open', ?)
+                """,
+                (_id_override, discord_msg_id, channel_id, now, closes_iso, target_iso),
+            ) as cur:
+                poll_id = cur.lastrowid
+        else:
+            async with self._db.execute(
+                """
+                INSERT INTO polls (discord_msg_id, channel_id, created_at, closes_at, status, target_date)
+                VALUES (?, ?, ?, ?, 'open', ?)
+                """,
+                (discord_msg_id, channel_id, now, closes_iso, target_iso),
+            ) as cur:
+                poll_id = cur.lastrowid
 
         for pos, (movie_id, emoji, msg_id) in enumerate(zip(movie_ids, emojis, message_ids), start=1):
-            await self._db.execute(
-                "INSERT INTO poll_entries (poll_id, movie_id, position, emoji, message_id) VALUES (?, ?, ?, ?, ?)",
-                (poll_id, movie_id, pos, emoji, msg_id),
-            )
+            if _entry_id_overrides is not None:
+                await self._db.execute(
+                    "INSERT INTO poll_entries (id, poll_id, movie_id, position, emoji, message_id) VALUES (?, ?, ?, ?, ?, ?)",
+                    (_entry_id_overrides[pos - 1], poll_id, movie_id, pos, emoji, msg_id),
+                )
+            else:
+                await self._db.execute(
+                    "INSERT INTO poll_entries (poll_id, movie_id, position, emoji, message_id) VALUES (?, ?, ?, ?, ?)",
+                    (poll_id, movie_id, pos, emoji, msg_id),
+                )
         await self._db.commit()
         return await self.get_poll(poll_id)
 
@@ -426,17 +498,28 @@ class SQLiteStorageProvider(StorageProvider):
         movie_id: int,
         scheduled_for: datetime,
         poll_id: Optional[int] = None,
+        _id_override: Optional[int] = None,
     ) -> ScheduleEntry:
         now = _now_iso()
         try:
-            async with self._db.execute(
-                """
-                INSERT INTO schedule_entries (movie_id, poll_id, scheduled_for, created_at)
-                VALUES (?, ?, ?, ?)
-                """,
-                (movie_id, poll_id, scheduled_for.isoformat(), now),
-            ) as cur:
-                entry_id = cur.lastrowid
+            if _id_override is not None:
+                async with self._db.execute(
+                    """
+                    INSERT INTO schedule_entries (id, movie_id, poll_id, scheduled_for, created_at)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (_id_override, movie_id, poll_id, scheduled_for.isoformat(), now),
+                ) as cur:
+                    entry_id = cur.lastrowid
+            else:
+                async with self._db.execute(
+                    """
+                    INSERT INTO schedule_entries (movie_id, poll_id, scheduled_for, created_at)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    (movie_id, poll_id, scheduled_for.isoformat(), now),
+                ) as cur:
+                    entry_id = cur.lastrowid
         except aiosqlite.IntegrityError:
             raise ValueError(f"Movie id={movie_id} is already scheduled.")
         await self._db.commit()
@@ -529,4 +612,18 @@ class SQLiteStorageProvider(StorageProvider):
         async with self._db.execute("SELECT key, value FROM bot_strings") as cur:
             rows = await cur.fetchall()
         return {r["key"]: r["value"] for r in rows if r["value"]}
+
+    async def set_bot_string(self, key: str, value: str) -> None:
+        # ON CONFLICT preserves the existing description column — only value
+        # is overwritten. Insert path stores NULL description; the startup
+        # seed pass will backfill it for known keys.
+        await self._db.execute(
+            """
+            INSERT INTO bot_strings (key, value, description)
+            VALUES (?, ?, NULL)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value
+            """,
+            (key, value),
+        )
+        await self._db.commit()
 
