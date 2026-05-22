@@ -93,6 +93,16 @@ class MovieBotClient(commands.Bot):
                 credentials_path=config.google_service_account_path or None,
                 credentials_json=config.google_service_account_json or None,
             )
+        elif config.storage_backend == "dual-write":
+            from bot.providers.storage.sheets import GoogleSheetsStorageProvider
+            from bot.providers.storage.dual_write import DualWriteStorageProvider
+            primary = SQLiteStorageProvider(config.db_path)
+            secondary = GoogleSheetsStorageProvider(
+                config.google_sheets_id,
+                credentials_path=config.google_service_account_path or None,
+                credentials_json=config.google_service_account_json or None,
+            )
+            self.storage = DualWriteStorageProvider(primary, secondary)
         else:
             self.storage = SQLiteStorageProvider(config.db_path)
         self.media = (
@@ -114,6 +124,11 @@ class MovieBotClient(commands.Bot):
         backend = self.config.storage_backend
         if backend == "sheets":
             log.info("Storage initialized: Google Sheets (id=%s)", self.config.google_sheets_id)
+        elif backend == "dual-write":
+            log.info(
+                "Storage initialized: dual-write (SQLite primary at %s, Sheets secondary id=%s)",
+                self.config.db_path, self.config.google_sheets_id,
+            )
         else:
             log.info("Storage initialized: SQLite at %s", self.config.db_path)
 
