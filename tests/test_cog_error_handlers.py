@@ -19,6 +19,7 @@ _COGS_WITH_HANDLER = [
     ("bot.cogs.stash", "StashCog"),
     ("bot.cogs.reviews", "ReviewsCog"),
     ("bot.cogs.history", "HistoryCog"),
+    ("bot.cogs.strings", "StringsCog"),
 ]
 
 

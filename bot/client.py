@@ -27,6 +27,7 @@ COGS = [
     "bot.cogs.maintenance",
     "bot.cogs.profile",
     "bot.cogs.help",
+    "bot.cogs.strings",
     "bot.cogs.admin",
 ]
 
