@@ -209,12 +209,17 @@ def poll_embed(
     closes_at_str: Optional[str] = None,
     target_date_str: Optional[str] = None,
     plex_availability: dict[int, bool] | None = None,
+    page_index: int = 1,
+    total_pages: int = 1,
 ) -> discord.Embed:
+    title = "🗳️ Movie Night Vote!"
+    if total_pages > 1:
+        title = f"🗳️ Movie Night Vote — Page {page_index} of {total_pages}"
     description = "React below to vote for the next movie night pick."
     if target_date_str:
         description += f"\n🎬 Movie night: **{target_date_str}**"
     embed = discord.Embed(
-        title="🗳️ Movie Night Vote!",
+        title=title,
         description=description,
         color=POLL_COLOR,
     )
@@ -320,6 +325,25 @@ def build_calendar_embed(
     )
     embed.set_footer(text="Movie nights: Wed & Thu at 10:30 PM ET · Highlighted in yellow")
     return embed
+
+
+async def send_embeds_paginated(
+    interaction: discord.Interaction,
+    embeds: list[discord.Embed],
+    *,
+    ephemeral: bool = False,
+) -> None:
+    """Send a list of embeds as one followup per embed.
+
+    Discord rejects multi-embed messages whose cumulative size exceeds 6000
+    chars (per-message limit, applies across all embeds in the message).
+    Sending one embed per followup keeps each message under the cap regardless
+    of how many embeds the caller produced.
+    """
+    if not embeds:
+        return
+    for embed in embeds:
+        await interaction.followup.send(embed=embed, ephemeral=ephemeral)
 
 
 def schedule_embeds(

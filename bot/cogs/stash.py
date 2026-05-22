@@ -8,7 +8,7 @@ from discord.ext import commands
 from gspread.exceptions import APIError
 
 from bot.models.movie import MovieStatus
-from bot.utils.embeds import movie_card, stash_list_embeds
+from bot.utils.embeds import movie_card, send_embeds_paginated, stash_list_embeds
 from bot.utils.movie_lookup import autocomplete_movies, parse_title_year, resolve_movie_by_id
 from bot.utils.tags import tags_from_omdb
 from bot.cogs.seasons import SEASON_CHOICES
@@ -201,7 +201,7 @@ class StashCog(commands.Cog, name="Stash"):
         for m in movies:
             plex_availability[m.id] = await self.bot.plex.check_movie(m.title)
         embeds = stash_list_embeds(movies, status_label="Stash", plex_availability=plex_availability)
-        await interaction.followup.send(embeds=embeds, ephemeral=True)
+        await send_embeds_paginated(interaction, embeds, ephemeral=True)
 
     # ── /stash search ─────────────────────────────────────────────────────
 

@@ -8,7 +8,7 @@ from discord import app_commands
 from discord.ext import commands, tasks
 from gspread.exceptions import APIError
 
-from bot.constants import NUMBER_EMOJI, MAX_POLL_OPTIONS, TZ_EASTERN, MOVIE_NIGHT_HOUR, MOVIE_NIGHT_MINUTE
+from bot.constants import POLL_PAGE_EMOJI, POLL_PAGE_SIZE, TZ_EASTERN, MOVIE_NIGHT_HOUR, MOVIE_NIGHT_MINUTE
 from bot.models.movie import Movie, MovieStatus
 from bot.models.poll import Poll, PollEntry, PollStatus
 from bot.utils.embeds import poll_embed
@@ -82,7 +82,7 @@ class PollCog(commands.Cog, name="Poll"):
     )
     @app_commands.describe(
         season="Season whose stash movies will become poll options",
-        date="Movie night date this poll is for (e.g. 2026-04-09 or 4/9/2026)",
+        date="Optional movie night date (e.g. 2026-04-09 or 4/9/2026). Omit for an open-ended season poll.",
         duration_hours="How many hours voting stays open (0 = manual close, default 24)",
     )
     @app_commands.choices(season=SEASON_CHOICES)
@@ -90,19 +90,17 @@ class PollCog(commands.Cog, name="Poll"):
         self,
         interaction: discord.Interaction,
         season: str,
-        date: str,
+        date: Optional[str] = None,
         duration_hours: int = 24,
     ):
         await interaction.response.defer()
 
-        # Staff gate
         if not user_has_staff_role(interaction.user, self.bot.config.staff_role_id):
             await interaction.followup.send(
                 "⛔ Only members with the **Staff** role can create polls.", ephemeral=True
             )
             return
 
-        # Block if a poll is already open
         existing_poll = await self.bot.storage.get_latest_open_poll()
         if existing_poll:
             await interaction.followup.send(
@@ -111,41 +109,44 @@ class PollCog(commands.Cog, name="Poll"):
             )
             return
 
-        # Parse target date
-        naive_date = None
-        for fmt in self._DATE_FORMATS:
-            try:
-                naive_date = datetime.strptime(date, fmt)
-                break
-            except ValueError:
-                continue
-        if naive_date is None:
-            await interaction.followup.send(
-                "⚠️ Couldn't parse that date. Try formats like `2026-04-09` or `4/9/2026`.",
-                ephemeral=True,
+        target_date: Optional[datetime] = None
+        target_str: Optional[str] = None
+        if date is not None:
+            naive_date = None
+            for fmt in self._DATE_FORMATS:
+                try:
+                    naive_date = datetime.strptime(date, fmt)
+                    break
+                except ValueError:
+                    continue
+            if naive_date is None:
+                await interaction.followup.send(
+                    "⚠️ Couldn't parse that date. Try formats like `2026-04-09` or `4/9/2026`.",
+                    ephemeral=True,
+                )
+                return
+
+            naive = naive_date.replace(
+                hour=MOVIE_NIGHT_HOUR, minute=MOVIE_NIGHT_MINUTE, second=0, microsecond=0
             )
-            return
+            target_date = naive.replace(tzinfo=TZ_EASTERN).astimezone(timezone.utc)
 
-        naive = naive_date.replace(
-            hour=MOVIE_NIGHT_HOUR, minute=MOVIE_NIGHT_MINUTE, second=0, microsecond=0
-        )
-        target_date = naive.replace(tzinfo=TZ_EASTERN).astimezone(timezone.utc)
-
-        # Conflict check: is anything already scheduled for this date?
-        all_entries = await self.bot.storage.list_schedule_entries(upcoming_only=True, limit=500)
-        conflict = next(
-            (e for e in all_entries if abs((e.scheduled_for - target_date).total_seconds()) <= 43200),
-            None,
-        )
-        if conflict:
-            conflict_movie = await self.bot.storage.get_movie(conflict.movie_id)
-            conflict_title = conflict_movie.display_title if conflict_movie else f"Movie #{conflict.movie_id}"
-            await interaction.followup.send(
-                f"⚠️ **{conflict_title}** is already scheduled for that date.", ephemeral=True
+            # Conflict check only runs when a date was provided.
+            all_entries = await self.bot.storage.list_schedule_entries(upcoming_only=True, limit=500)
+            conflict = next(
+                (e for e in all_entries if abs((e.scheduled_for - target_date).total_seconds()) <= 43200),
+                None,
             )
-            return
+            if conflict:
+                conflict_movie = await self.bot.storage.get_movie(conflict.movie_id)
+                conflict_title = conflict_movie.display_title if conflict_movie else f"Movie #{conflict.movie_id}"
+                await interaction.followup.send(
+                    f"⚠️ **{conflict_title}** is already scheduled for that date.", ephemeral=True
+                )
+                return
 
-        # Load stash movies for the chosen season
+            target_str = format_dt_eastern(target_date)
+
         all_stash = await self.bot.storage.list_movies(status=MovieStatus.STASH)
         season_movies = [m for m in all_stash if m.season == season]
         if not season_movies:
@@ -153,45 +154,92 @@ class PollCog(commands.Cog, name="Poll"):
                 f"⚠️ No stash movies found tagged as **{season}**.", ephemeral=True
             )
             return
-        if len(season_movies) > MAX_POLL_OPTIONS:
-            await interaction.followup.send(
-                f"⚠️ **{season}** has {len(season_movies)} stash movies — the max per poll is "
-                f"{MAX_POLL_OPTIONS}. Remove some from the stash and try again.",
-                ephemeral=True,
-            )
-            return
 
-        emojis = NUMBER_EMOJI[: len(season_movies)]
         closes_at = (
             datetime.now(timezone.utc) + timedelta(hours=duration_hours)
             if duration_hours > 0
             else None
         )
-
         closes_str = format_dt_eastern(closes_at) if closes_at else None
-        target_str = format_dt_eastern(target_date)
-        temp_entries = [
-            PollEntry(id=0, poll_id=0, movie_id=m.id, position=i + 1, emoji=emojis[i])
-            for i, m in enumerate(season_movies)
-        ]
+
         plex_availability = {}
         for m in season_movies:
             plex_availability[m.id] = await self.bot.plex.check_movie(m.title)
-        embed = poll_embed(
-            season_movies, temp_entries,
-            closes_at_str=closes_str, target_date_str=target_str,
-            plex_availability=plex_availability,
-        )
 
-        msg = await interaction.followup.send(embed=embed, wait=True)
-        for emoji in emojis:
-            await msg.add_reaction(emoji)
+        pages = [
+            season_movies[i : i + POLL_PAGE_SIZE]
+            for i in range(0, len(season_movies), POLL_PAGE_SIZE)
+        ]
+        total_pages = len(pages)
+
+        # Pages 2+ post via interaction.channel.send — guard against a None
+        # channel (e.g. interaction with no resolvable channel context) so the
+        # loop doesn't AttributeError after page 1 already shipped.
+        if len(pages) > 1 and interaction.channel is None:
+            await interaction.followup.send(
+                "⚠️ Cannot post multi-page poll — no channel resolved.", ephemeral=True
+            )
+            return
+
+        all_movie_ids: list[int] = []
+        all_emojis: list[str] = []
+        all_message_ids: list[str] = []
+        first_msg_id: Optional[str] = None
+
+        # Post each page + its reactions inside one try/except. If Discord blows
+        # up mid-loop (rate limit, perm error, network blip), earlier pages are
+        # already live in the channel — but if we proceeded to add_poll() and
+        # then died, the DB write wouldn't include the orphaned pages. Instead,
+        # bail early and tell the user to clean up manually. We don't auto-
+        # delete partial pages — simpler to surface the orphan loudly.
+        try:
+            for page_idx, page_movies in enumerate(pages, start=1):
+                page_emojis = POLL_PAGE_EMOJI[: len(page_movies)]
+                page_entries = [
+                    PollEntry(id=0, poll_id=0, movie_id=m.id, position=i + 1, emoji=page_emojis[i])
+                    for i, m in enumerate(page_movies)
+                ]
+                embed = poll_embed(
+                    page_movies, page_entries,
+                    closes_at_str=closes_str if page_idx == total_pages else None,
+                    target_date_str=target_str,
+                    plex_availability=plex_availability,
+                    page_index=page_idx,
+                    total_pages=total_pages,
+                )
+
+                if page_idx == 1:
+                    msg = await interaction.followup.send(embed=embed, wait=True)
+                    first_msg_id = str(msg.id)
+                else:
+                    msg = await interaction.channel.send(embed=embed)
+
+                for emoji in page_emojis:
+                    await msg.add_reaction(emoji)
+
+                for m, emoji in zip(page_movies, page_emojis):
+                    all_movie_ids.append(m.id)
+                    all_emojis.append(emoji)
+                    all_message_ids.append(str(msg.id))
+        except discord.HTTPException as exc:
+            log.exception(
+                "Poll create: Discord HTTP failure mid-pagination at page %d/%d: %s",
+                page_idx, total_pages, exc,
+            )
+            await interaction.followup.send(
+                f"⚠️ Poll creation failed mid-way at page {page_idx}. "
+                f"Page(s) 1..{page_idx - 1} are orphaned in Discord — please "
+                f"delete them manually, then retry.",
+                ephemeral=True,
+            )
+            return
 
         poll = await self.bot.storage.add_poll(
-            discord_msg_id=str(msg.id),
+            discord_msg_id=first_msg_id,
             channel_id=str(interaction.channel_id),
-            movie_ids=[m.id for m in season_movies],
-            emojis=emojis,
+            movie_ids=all_movie_ids,
+            emojis=all_emojis,
+            message_ids=all_message_ids,
             closes_at=closes_at,
             target_date=target_date,
         )
@@ -203,7 +251,10 @@ class PollCog(commands.Cog, name="Poll"):
         if maintenance and interaction.channel is not None:
             await maintenance.post_poll_announcement(interaction.channel)
 
-        reply = f"✅ Poll created for **{target_str}** (poll id={poll.id})."
+        if target_str:
+            reply = f"✅ Poll created for **{target_str}** across {total_pages} page(s) with {len(season_movies)} movie(s) (poll id={poll.id})."
+        else:
+            reply = f"✅ Poll created across {total_pages} page(s) with {len(season_movies)} movie(s) (poll id={poll.id})."
         if closes_at:
             reply += f"\nVoting closes {closes_str}."
         await interaction.followup.send(reply, ephemeral=True)
@@ -277,20 +328,24 @@ class PollCog(commands.Cog, name="Poll"):
         if not general_ch:
             return vote_counts, movies_by_id
 
-        try:
-            msg = await general_ch.fetch_message(int(poll.discord_msg_id))
-        except discord.NotFound:
-            return vote_counts, movies_by_id
-
-        reaction_map: dict[str, int] = {}
-        for reaction in msg.reactions:
-            reaction_map[str(reaction.emoji)] = max(0, reaction.count - 1)
-
+        # Group entries by their page message so a repeated emoji (e.g. 1️⃣ on
+        # both page 1 and page 2) is tallied against the correct movie.
+        by_msg: dict[str, list[PollEntry]] = {}
         for entry in poll.entries:
-            movie = await self.bot.storage.get_movie(entry.movie_id)
-            if movie:
-                movies_by_id[entry.movie_id] = movie
-            vote_counts[entry.movie_id] = reaction_map.get(entry.emoji, 0)
+            msg_id = entry.message_id or poll.discord_msg_id
+            by_msg.setdefault(msg_id, []).append(entry)
+
+        for msg_id, entries in by_msg.items():
+            try:
+                msg = await general_ch.fetch_message(int(msg_id))
+            except discord.NotFound:
+                continue
+            reaction_map = {str(r.emoji): max(0, r.count - 1) for r in msg.reactions}
+            for entry in entries:
+                movie = await self.bot.storage.get_movie(entry.movie_id)
+                if movie:
+                    movies_by_id[entry.movie_id] = movie
+                vote_counts[entry.movie_id] = reaction_map.get(entry.emoji, 0)
 
         return vote_counts, movies_by_id
 
