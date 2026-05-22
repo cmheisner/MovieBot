@@ -253,9 +253,57 @@ View logs: `fly logs`
 
 ---
 
+## Backups
+
+`scripts/backup_db.py` snapshots `data/moviebot.db` on a schedule. SQLite WAL mode means a raw `cp` of the live db can produce a torn snapshot, so the script uses SQLite's online backup API to take a consistent copy even while the bot is running.
+
+**Two modes:**
+
+```bash
+# Daily local backup — copies to data/backups/moviebot-YYYY-MM-DD.db
+# and prunes anything older than 30 days.
+python scripts/backup_db.py
+
+# Weekly Drive upload — does the local backup first, then uploads the
+# new file to the "MovieBot Backups" folder on the service account's
+# Drive (folder is auto-created on first run). Keeps the 8 most recent.
+python scripts/backup_db.py --upload-drive
+```
+
+The Drive mode reuses `GOOGLE_SERVICE_ACCOUNT_PATH` and asks for the `drive.file` scope, which limits the service account to files it created — not your full Drive.
+
+**Crontab on the server:**
+
+```cron
+# Daily local backup at 3:15 AM
+15 3 * * * cd /home/moviebot/MovieBot && /home/moviebot/MovieBot/venv/bin/python scripts/backup_db.py >> data/logs/backup.log 2>&1
+
+# Weekly Drive upload Sunday at 4:00 AM (after daily backup)
+0 4 * * 0 cd /home/moviebot/MovieBot && /home/moviebot/MovieBot/venv/bin/python scripts/backup_db.py --upload-drive >> data/logs/backup.log 2>&1
+```
+
+Exit codes: `0` success, `1` upload failed (local backup is still safe on disk), `2` local backup failed.
+
+**Restoring from a backup:**
+
+If the bot is stopped:
+
+```bash
+cp data/backups/moviebot-YYYY-MM-DD.db data/moviebot.db
+```
+
+If the bot is hot and you want zero downtime, use the same SQLite online-backup API in reverse rather than `cp` — a quick one-liner:
+
+```bash
+python -c "import sqlite3; src=sqlite3.connect('data/backups/moviebot-2026-05-22.db'); dst=sqlite3.connect('data/moviebot.db'); src.backup(dst); dst.close(); src.close()"
+```
+
+---
+
 ## Requirements
 
 - Python 3.10+
 - discord.py 2.x
 - aiohttp, python-dotenv, tzdata (required on Windows)
 - gspread, google-auth (for Google Sheets backend)
+- google-api-python-client (for Google Drive backup uploads)
