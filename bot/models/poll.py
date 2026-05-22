@@ -16,7 +16,6 @@ class PollEntry:
     movie_id: int
     position: int
     emoji: str
-    message_id: Optional[str] = None
 
 
 @dataclass

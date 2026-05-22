@@ -77,7 +77,6 @@ class StorageProvider(ABC):
         channel_id: str,
         movie_ids: list[int],
         emojis: list[str],
-        message_ids: list[str],
         closes_at: Optional[datetime] = None,
         target_date: Optional[datetime] = None,
     ) -> Poll:

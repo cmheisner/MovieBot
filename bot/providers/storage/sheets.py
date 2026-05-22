@@ -33,7 +33,7 @@ DEFAULT_POLL_HEADERS = [
     "id", "discord_msg_id", "channel_id", "created_at", "closes_at",
     "closed_at", "status", "target_date",
 ]
-DEFAULT_POLL_ENTRY_HEADERS = ["id", "poll_id", "movie_id", "position", "emoji", "message_id"]
+DEFAULT_POLL_ENTRY_HEADERS = ["id", "poll_id", "movie_id", "position", "emoji"]
 DEFAULT_SCHEDULE_HEADERS = [
     "id", "movie_id", "poll_id", "scheduled_for", "discord_event_id",
     "posted_msg_id", "created_at",
@@ -188,7 +188,6 @@ class GoogleSheetsStorageProvider(StorageProvider):
             self._worksheets["bot_strings"] = self._ensure_sheet("bot_strings", DEFAULT_BOT_STRINGS_HEADERS)
             for name in ("movies", "polls", "poll_entries", "schedule_entries", "bot_strings"):
                 self._load_header_map(name)
-            self._ensure_poll_entries_message_id_column()
             self._seed_bot_strings()
             log.info("Sheets: loaded header maps: %s", {k: list(v.keys()) for k, v in self._cols.items()})
 
@@ -326,7 +325,6 @@ class GoogleSheetsStorageProvider(StorageProvider):
             movie_id=int(self._get(r, "poll_entries", "movie_id") or 0),
             position=int(self._get(r, "poll_entries", "position") or 0),
             emoji=self._get(r, "poll_entries", "emoji"),
-            message_id=_opt(self._get(r, "poll_entries", "message_id")),
         )
 
     def _row_to_schedule_entry(self, r: list[str]) -> ScheduleEntry:
@@ -611,7 +609,6 @@ class GoogleSheetsStorageProvider(StorageProvider):
         channel_id: str,
         movie_ids: list[int],
         emojis: list[str],
-        message_ids: list[str],
         closes_at: Optional[datetime] = None,
         target_date: Optional[datetime] = None,
     ) -> Poll:
@@ -634,14 +631,13 @@ class GoogleSheetsStorageProvider(StorageProvider):
                 "target_date": target_date,
             }
             _retry_call(ws_polls.append_row, self._pack_row("polls", poll_values), value_input_option="RAW")
-            for pos, (movie_id, emoji, msg_id) in enumerate(zip(movie_ids, emojis, message_ids), start=1):
+            for pos, (movie_id, emoji) in enumerate(zip(movie_ids, emojis), start=1):
                 entry_values = {
                     "id": entry_id,
                     "poll_id": poll_id,
                     "movie_id": movie_id,
                     "position": pos,
                     "emoji": emoji,
-                    "message_id": msg_id,
                 }
                 _retry_call(ws_entries.append_row, self._pack_row("poll_entries", entry_values), value_input_option="RAW")
                 entry_id += 1
@@ -971,30 +967,6 @@ class GoogleSheetsStorageProvider(StorageProvider):
             return result[:limit]
 
         return await asyncio.to_thread(_do)
-
-    # ── One-shot migrations ──────────────────────────────────────────────
-
-    def _ensure_poll_entries_message_id_column(self) -> None:
-        """Append the 'message_id' header to poll_entries if a pre-existing
-        sheet was created before the multi-page poll feature shipped.
-
-        DEFAULT_POLL_ENTRY_HEADERS already includes 'message_id', but that
-        only takes effect when the tab is created fresh. For Brandon's prod
-        sheet — and any other deployment that predates this column —
-        _pack_row silently drops 'message_id' writes because the column has
-        no slot in the header map, which causes multi-page polls to cross-
-        contaminate votes (all entries collapse to poll.discord_msg_id in
-        _fetch_votes). Add the header in place and reload the map.
-
-        Tightly scoped to this one header — do not generalize.
-        """
-        if "message_id" in self._cols.get("poll_entries", {}):
-            return
-        ws = self._ws("poll_entries")
-        current_width = self._widths.get("poll_entries", 0)
-        _retry_call(ws.update_cell, 1, current_width + 1, "message_id")
-        self._load_header_map("poll_entries")
-        log.info("Sheets: added missing 'message_id' header to poll_entries tab.")
 
     # ── Bot Strings ──────────────────────────────────────────────────────
 

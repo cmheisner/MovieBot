@@ -10,7 +10,7 @@ from gspread.exceptions import APIError
 
 from bot.constants import TZ_EASTERN, MOVIE_NIGHT_HOUR, MOVIE_NIGHT_MINUTE
 from bot.models.movie import MovieStatus
-from bot.utils.embeds import build_calendar_embed, schedule_embeds, send_embeds_paginated
+from bot.utils.embeds import schedule_embeds, build_calendar_embed
 from bot.utils.movie_lookup import autocomplete_movies, resolve_movie_by_id
 from bot.utils.time_utils import (
     aware_utc,
@@ -352,7 +352,7 @@ class ScheduleCog(commands.Cog, name="Schedule"):
                 movies_by_id[e.movie_id] = m
         plex_availability = await _plex_map(self.bot.plex, list(movies_by_id.values()))
         embeds = schedule_embeds(entries, movies_by_id, plex_availability)
-        await send_embeds_paginated(interaction, embeds, ephemeral=True)
+        await interaction.followup.send(embeds=embeds, ephemeral=True)
 
     # ── /schedule add ─────────────────────────────────────────────────────
 

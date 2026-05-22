@@ -46,12 +46,11 @@ CREATE TABLE IF NOT EXISTS polls (
 );
 
 CREATE TABLE IF NOT EXISTS poll_entries (
-    id         INTEGER PRIMARY KEY AUTOINCREMENT,
-    poll_id    INTEGER NOT NULL REFERENCES polls(id) ON DELETE CASCADE,
-    movie_id   INTEGER NOT NULL REFERENCES movies(id),
-    position   INTEGER NOT NULL,
-    emoji      TEXT    NOT NULL,
-    message_id TEXT,
+    id       INTEGER PRIMARY KEY AUTOINCREMENT,
+    poll_id  INTEGER NOT NULL REFERENCES polls(id) ON DELETE CASCADE,
+    movie_id INTEGER NOT NULL REFERENCES movies(id),
+    position INTEGER NOT NULL,
+    emoji    TEXT    NOT NULL,
     UNIQUE (poll_id, movie_id),
     UNIQUE (poll_id, position)
 );
@@ -172,13 +171,6 @@ class SQLiteStorageProvider(StorageProvider):
         # global bot_strings default for the post-event #news message).
         try:
             await self._db.execute("ALTER TABLE movies ADD COLUMN thanks_for_watching_override TEXT")
-            await self._db.commit()
-        except aiosqlite.OperationalError:
-            pass  # Column already exists
-        # Migration: poll_entries gained message_id so paginated polls can tally
-        # reactions per-page (same emoji repeats across pages).
-        try:
-            await self._db.execute("ALTER TABLE poll_entries ADD COLUMN message_id TEXT")
             await self._db.commit()
         except aiosqlite.OperationalError:
             pass  # Column already exists
@@ -318,7 +310,6 @@ class SQLiteStorageProvider(StorageProvider):
         channel_id: str,
         movie_ids: list[int],
         emojis: list[str],
-        message_ids: list[str],
         closes_at: Optional[datetime] = None,
         target_date: Optional[datetime] = None,
     ) -> Poll:
@@ -334,10 +325,10 @@ class SQLiteStorageProvider(StorageProvider):
         ) as cur:
             poll_id = cur.lastrowid
 
-        for pos, (movie_id, emoji, msg_id) in enumerate(zip(movie_ids, emojis, message_ids), start=1):
+        for pos, (movie_id, emoji) in enumerate(zip(movie_ids, emojis), start=1):
             await self._db.execute(
-                "INSERT INTO poll_entries (poll_id, movie_id, position, emoji, message_id) VALUES (?, ?, ?, ?, ?)",
-                (poll_id, movie_id, pos, emoji, msg_id),
+                "INSERT INTO poll_entries (poll_id, movie_id, position, emoji) VALUES (?, ?, ?, ?)",
+                (poll_id, movie_id, pos, emoji),
             )
         await self._db.commit()
         return await self.get_poll(poll_id)
@@ -350,8 +341,7 @@ class SQLiteStorageProvider(StorageProvider):
         return [
             PollEntry(
                 id=r["id"], poll_id=r["poll_id"], movie_id=r["movie_id"],
-                position=r["position"], emoji=r["emoji"],
-                message_id=r["message_id"] if "message_id" in r.keys() else None,
+                position=r["position"], emoji=r["emoji"]
             )
             for r in rows
         ]
@@ -405,7 +395,6 @@ class SQLiteStorageProvider(StorageProvider):
             PollEntry(
                 id=r["id"], poll_id=r["poll_id"], movie_id=r["movie_id"],
                 position=r["position"], emoji=r["emoji"],
-                message_id=r["message_id"] if "message_id" in r.keys() else None,
             )
             for r in rows
         ]
