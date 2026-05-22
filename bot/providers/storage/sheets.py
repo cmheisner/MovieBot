@@ -978,23 +978,31 @@ class GoogleSheetsStorageProvider(StorageProvider):
         """Append the 'message_id' header to poll_entries if a pre-existing
         sheet was created before the multi-page poll feature shipped.
 
-        DEFAULT_POLL_ENTRY_HEADERS already includes 'message_id', but that
-        only takes effect when the tab is created fresh. For Brandon's prod
-        sheet — and any other deployment that predates this column —
-        _pack_row silently drops 'message_id' writes because the column has
-        no slot in the header map, which causes multi-page polls to cross-
-        contaminate votes (all entries collapse to poll.discord_msg_id in
-        _fetch_votes). Add the header in place and reload the map.
-
-        Tightly scoped to this one header — do not generalize.
+        Two real-world traps this handles:
+        1. Sheets rejects update_cell writes past the worksheet's grid width
+           with HTTP 400 ("Range … exceeds grid limits"). Must add_cols first.
+        2. Any failure here must NOT crash init — the bot can still serve
+           legacy single-page polls without this column. Log loudly and
+           continue; the migration retries on next startup.
         """
         if "message_id" in self._cols.get("poll_entries", {}):
             return
         ws = self._ws("poll_entries")
-        current_width = self._widths.get("poll_entries", 0)
-        _retry_call(ws.update_cell, 1, current_width + 1, "message_id")
-        self._load_header_map("poll_entries")
-        log.info("Sheets: added missing 'message_id' header to poll_entries tab.")
+        target_col = self._widths.get("poll_entries", 0) + 1
+        try:
+            if ws.col_count < target_col:
+                _retry_call(ws.add_cols, target_col - ws.col_count)
+            _retry_call(ws.update_cell, 1, target_col, "message_id")
+            self._load_header_map("poll_entries")
+            log.info("Sheets: added missing 'message_id' header to poll_entries tab.")
+        except APIError as exc:
+            log.error(
+                "Sheets migration failed to add 'message_id' column to "
+                "poll_entries: %s. Multi-page polls will silently collapse "
+                "votes to page 1 until this column exists. Add it manually "
+                "(header row, next empty column) if this keeps failing.",
+                exc,
+            )
 
     # ── Bot Strings ──────────────────────────────────────────────────────
 
