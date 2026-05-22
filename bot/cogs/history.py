@@ -7,7 +7,7 @@ from discord.ext import commands
 from gspread.exceptions import APIError
 
 from bot.models.movie import MovieStatus
-from bot.utils.embeds import stash_list_embeds
+from bot.utils.embeds import send_embeds_paginated, stash_list_embeds
 
 log = logging.getLogger(__name__)
 
@@ -39,7 +39,7 @@ class HistoryCog(commands.Cog, name="History"):
         movies.sort(key=lambda m: watch_dates.get(m.id) or m.added_at, reverse=True)
 
         embeds = stash_list_embeds(movies, status_label="Watched", watch_dates=watch_dates)
-        await interaction.followup.send(embeds=embeds, ephemeral=True)
+        await send_embeds_paginated(interaction, embeds, ephemeral=True)
 
     # ── /skipped list ────────────────────────────────────────────────────
 
@@ -49,7 +49,7 @@ class HistoryCog(commands.Cog, name="History"):
         movies = await self.bot.storage.list_movies(status=MovieStatus.SKIPPED)
         movies.sort(key=lambda m: m.added_at, reverse=True)
         embeds = stash_list_embeds(movies, status_label="Skipped")
-        await interaction.followup.send(embeds=embeds, ephemeral=True)
+        await send_embeds_paginated(interaction, embeds, ephemeral=True)
 
     # ── Error handler ─────────────────────────────────────────────────────
 
