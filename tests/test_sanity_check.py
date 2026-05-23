@@ -780,14 +780,11 @@ def test_counts_dict_tracks_multiple_categories():
 # ── Schedule sanity checks ──────────────────────────────────────────────────
 
 def _movie_night(offset_days: int = 7, *, hour: int = 22, minute: int = 30, weekday: int = 2):
-    """Build a datetime for a movie-night slot — Wed by default, N days out."""
-    # Start from a known Wednesday: 2026-04-29 22:30 ET → 2026-04-30 02:30 UTC.
-    base = datetime(2026, 4, 30, 2, 30, tzinfo=timezone.utc)
-    # Nudge to the target weekday (0=Mon, 2=Wed, 3=Thu).
+    """Build a datetime for a movie-night slot — Wed by default, N days out from today."""
     from bot.constants import TZ_EASTERN
-    et_base = base.astimezone(TZ_EASTERN)
-    delta_days = (weekday - et_base.weekday()) % 7
-    slot = et_base + timedelta(days=delta_days + offset_days)
+    now_et = datetime.now(TZ_EASTERN)
+    delta_days = (weekday - now_et.weekday()) % 7
+    slot = now_et + timedelta(days=delta_days + offset_days)
     slot = slot.replace(hour=hour, minute=minute, second=0, microsecond=0)
     return slot.astimezone(timezone.utc)
 
