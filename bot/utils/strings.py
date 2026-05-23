@@ -35,7 +35,7 @@ DEFAULT_BOT_STRINGS: list[tuple[str, str, str]] = [
         "thanks_for_watching",
         "🍿 Thanks for watching **{movie}** tonight! Hope you enjoyed it. 🎬",
         "Posted to #news after a movie's Discord event ends. "
-        "Per-movie override: set the `thanks_for_watching_override` column on the movies tab. "
+        "Per-movie override: set via `/stash edit override:<text>`. "
         "Placeholders: {movie}",
     ),
     (

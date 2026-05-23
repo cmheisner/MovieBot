@@ -222,6 +222,55 @@ class StashCog(commands.Cog, name="Stash"):
     ) -> list[app_commands.Choice[str]]:
         return await autocomplete_movies(interaction, current, [MovieStatus.STASH])
 
+    # ── /stash edit ───────────────────────────────────────────────────────
+
+    @stash.command(name="edit", description="Edit a movie's per-movie override fields (admin only).")
+    @app_commands.describe(
+        movie="Movie to edit (start typing to search)",
+        override=(
+            "New thanks_for_watching override text. "
+            "Use a single `-` to clear. Placeholders: {movie}."
+        ),
+    )
+    async def stash_edit(
+        self,
+        interaction: discord.Interaction,
+        movie: str,
+        override: str,
+    ):
+        await interaction.response.defer(ephemeral=True)
+        if not interaction.user.guild_permissions.manage_guild:
+            await interaction.followup.send(
+                "⛔ Admins only.", ephemeral=True
+            )
+            return
+
+        m = await resolve_movie_by_id(self.bot.storage, interaction, movie)
+        if not m:
+            return
+
+        new_value: Optional[str] = None if override.strip() == "-" else override
+        await self.bot.storage.update_movie(m.id, thanks_for_watching_override=new_value)
+
+        if new_value is None:
+            msg = f"🧹 Cleared thanks-for-watching override on **{m.display_title}**."
+        else:
+            msg = (
+                f"✏️ Updated thanks-for-watching override on **{m.display_title}**:\n"
+                f"> {new_value}"
+            )
+        await interaction.followup.send(msg, ephemeral=True)
+
+    @stash_edit.autocomplete("movie")
+    async def _stash_edit_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> list[app_commands.Choice[str]]:
+        return await autocomplete_movies(
+            interaction,
+            current,
+            [MovieStatus.STASH, MovieStatus.SCHEDULED, MovieStatus.WATCHED],
+        )
+
     # ── /stash remove ─────────────────────────────────────────────────────
 
     @stash.command(name="remove", description="Remove a movie from the stash.")
