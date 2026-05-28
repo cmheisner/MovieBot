@@ -21,47 +21,42 @@ Use `/help` in Discord for a quick in-bot reference.
 
 | Command | Parameters | Description |
 |---|---|---|
-| `/stash add` | `title` *(required)*, `year`, `notes`, `season` | Add a movie to the stash. Searches OMDB for metadata; if multiple matches are found, prompts you to pick the right one. |
-| `/stash list` | `status` *(default: Stash)*, `season` | List movies filtered by status and/or season. Status choices: **Stash**, **Nominated**, **Scheduled**, **Watched**, **All**. |
-| `/stash info` | `title` *(required)*, `year` | Show a detailed card for a movie — title, year, OMDB data, poster, and notes. |
-| `/stash edit` | `title` *(required)*, `year`, `notes`, `season` | Edit a movie's notes or season. Only the user who added it (or an admin) can edit. |
-| `/stash remove` | `title` *(required)*, `year` | Remove a movie from the stash. Only the original adder or an admin can remove it. |
-| `/stash watched` | `title` *(required)*, `year` | Mark a movie as watched and clean up its Discord event. |
-| `/stash archive` | `limit` *(default: 20, max 50)* | Browse all movies ever watched, sorted newest first, with watch date and IMDB rating. |
+| `/stash add` | `title` *(required)*, `season` *(required)*, `notes` | Add a movie to the stash. Searches OMDB for metadata; if multiple matches are found, prompts you to pick the right one. |
+| `/stash list` | — | List all movies currently in the stash. |
+| `/stash search` | `movie` *(required, autocomplete)* | Show a detailed card for a movie — title, year, OMDB data, poster, and notes. |
+| `/stash edit` | `movie` *(required, autocomplete)*, `override` | Edit a movie's per-movie "thanks for watching" message override (admin only). Pass `-` to clear. |
+| `/stash remove` | `movie` *(required, autocomplete)* | Remove a movie from the stash. Only the original adder or an admin can remove it. |
 
 ### 🗓️ Season
 
 | Command | Parameters | Description |
 |---|---|---|
-| `/season list` | `season` *(default: This Winter)*, `status` | List movies in a seasonal collection. |
-| `/season tag` | `title` *(required)*, `season` *(required)*, `year` | Tag a movie as part of a seasonal collection. |
-| `/season overview` | — | Summary of all seasonal collections with watched/scheduled/stash counts. |
+| `/season tag` | `movie` *(required, autocomplete)*, `season` *(required)* | Set or update the season for any movie (admin only). Season choices: **Winter**, **Spring**, **Summer**, **Fall**. |
 
 ### 📅 Schedule
 
 | Command | Parameters | Description |
 |---|---|---|
-| `/schedule list` | `limit` *(default: 5)* | Show upcoming scheduled movies with their dates. |
-| `/schedule history` | `limit` *(default: 10)* | Show the full schedule — both past and upcoming. |
-| `/schedule add` | `title` *(required)*, `date` *(YYYY-MM-DD)*, `time` *(HH:MM)* | Manually schedule a movie. Defaults to the next movie night (Wed or Thu at 10:30 PM ET) if no date is given. Triggers a #news announcement and refreshes #schedule. |
-| `/schedule remove` | `title` *(required)*, `year` | Remove a schedule entry. Deletes any linked Discord event and returns the movie to **Stash**. |
-| `/schedule reschedule` | `movie`, `new_date` *(YYYY-MM-DD)*, `swap_with` | Move a movie to a new date and shift all subsequent entries by one week. All params are optional. |
+| `/schedule list` | — | Show upcoming scheduled movies with their dates. |
+| `/schedule add` | `movie` *(required, autocomplete)*, `date` *(autocomplete)* | Manually schedule a stash movie. Defaults to the next available movie night if no date is given. Triggers a #news announcement and refreshes #schedule. |
+| `/schedule remove` | `movie` *(required, autocomplete)* | Remove a schedule entry. Deletes any linked Discord event and returns the movie to **Stash**. |
+| `/schedule move` | `movie` *(required, autocomplete)*, `new_date` *(autocomplete)* | Move a scheduled movie to a new date. Offers a swap UI if the target date is already taken. |
 | `/schedule calendar` | `month` *(1–12)*, `year` | Show a month-view calendar with movie nights highlighted. |
 
 ### 🗳️ Poll
 
 | Command | Parameters | Description |
 |---|---|---|
-| `/poll create` | `movie_1` *(required)*, `movie_2`, `movie_3`, `movie_4`, `duration_hours` *(default: 24)* | Start a poll in the general channel. Up to 4 stash movies. Autocomplete searches the stash as you type. |
-| `/poll status` | — | Show live vote tallies for the active poll. |
-| `/poll close` | — | Close voting, tally reactions, and schedule the winner. The winner moves to **Scheduled**; all other nominees return to **Stash**. Triggers a #news announcement. |
-| `/poll cancel` | — | Cancel the active poll and return all nominated movies to **Stash**. |
+| `/poll create` | `season` *(required)*, `date`, `duration_hours` *(default: 24)* | Create a poll from all stash movies in a season (staff only). |
+| `/poll list` | — | Show current vote tallies for the open poll. |
+| `/poll close` | — | Close voting and post ranked results. The winner moves to **Scheduled**; all other nominees return to **Stash**. Triggers a #news announcement. |
 
 ### 💩 Reviews
 
 | Command | Parameters | Description |
 |---|---|---|
-| `/reviews` | `title`, `count` *(default: 3, max 5)* | Post the lowest-rated audience reviews for a movie via Metacritic. Defaults to the next scheduled movie if no title is given. |
+| `/reviews best` | `movie` *(autocomplete)*, `count` *(default: 3, max 5)* | Post the best audience reviews for a movie from Metacritic. Defaults to the next scheduled movie. |
+| `/reviews worst` | `movie` *(autocomplete)*, `count` *(default: 3, max 5)* | Post the worst audience reviews for a movie from Metacritic. Defaults to the next scheduled movie. |
 
 ### 📜 History
 

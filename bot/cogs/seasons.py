@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import discord
 from discord import app_commands
 from discord.ext import commands
+
+from bot.models.movie import MovieStatus
+from bot.utils.movie_lookup import autocomplete_movies, resolve_movie_by_id
 
 SEASON_CHOICES = [
     app_commands.Choice(name="Winter", value="Winter"),
@@ -10,10 +14,67 @@ SEASON_CHOICES = [
     app_commands.Choice(name="Fall",   value="Fall"),
 ]
 
+_ALL_ACTIVE_STATUSES = [
+    MovieStatus.STASH,
+    MovieStatus.NOMINATED,
+    MovieStatus.SCHEDULED,
+    MovieStatus.WATCHED,
+]
+
 
 class SeasonsCog(commands.Cog, name="Seasons"):
     def __init__(self, bot):
         self.bot = bot
+
+    season = app_commands.Group(name="season", description="Manage seasonal movie collections.")
+
+    # ── /season tag ───────────────────────────────────────────────────────
+
+    @season.command(name="tag", description="Set or update the season for a movie (admin only).")
+    @app_commands.describe(
+        movie="Movie to tag (start typing to search)",
+        season="Season to assign",
+    )
+    @app_commands.choices(season=SEASON_CHOICES)
+    async def season_tag(
+        self,
+        interaction: discord.Interaction,
+        movie: str,
+        season: str,
+    ):
+        await interaction.response.defer(ephemeral=True)
+        if not interaction.user.guild_permissions.manage_guild:
+            await interaction.followup.send("⛔ Admins only.", ephemeral=True)
+            return
+
+        m = await resolve_movie_by_id(self.bot.storage, interaction, movie)
+        if not m:
+            return
+
+        await self.bot.storage.update_movie(m.id, season=season)
+        await interaction.followup.send(
+            f"✅ Tagged **{m.display_title}** as **{season}**.", ephemeral=True
+        )
+
+    @season_tag.autocomplete("movie")
+    async def _season_tag_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> list[app_commands.Choice[str]]:
+        return await autocomplete_movies(interaction, current, _ALL_ACTIVE_STATUSES)
+
+    # ── Error handler ─────────────────────────────────────────────────────
+
+    async def cog_app_command_error(
+        self, interaction: discord.Interaction, error: app_commands.AppCommandError
+    ) -> None:
+        msg = "⚠️ Command failed unexpectedly. Check `/logs` for details."
+        try:
+            if interaction.response.is_done():
+                await interaction.followup.send(msg, ephemeral=True)
+            else:
+                await interaction.response.send_message(msg, ephemeral=True)
+        except discord.HTTPException:
+            pass
 
 
 async def setup(bot):
