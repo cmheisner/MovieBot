@@ -1,5 +1,6 @@
 from __future__ import annotations
 import logging
+from datetime import date, datetime, timezone
 
 import discord
 from discord import app_commands
@@ -7,7 +8,8 @@ from discord.ext import commands
 from gspread.exceptions import APIError
 
 from bot.models.movie import MovieStatus
-from bot.utils.embeds import send_embeds_paginated, stash_list_embeds
+from bot.utils.embeds import movie_card, send_embeds_paginated, stash_list_embeds
+from bot.utils.movie_lookup import autocomplete_movies, resolve_movie_by_id
 
 log = logging.getLogger(__name__)
 
@@ -40,6 +42,45 @@ class HistoryCog(commands.Cog, name="History"):
 
         embeds = stash_list_embeds(movies, status_label="Watched", watch_dates=watch_dates)
         await send_embeds_paginated(interaction, embeds, ephemeral=True)
+
+    # ── /watched mark ────────────────────────────────────────────────────
+
+    @watched.command(name="mark", description="Mark a stash movie as already watched (admin only).")
+    @app_commands.describe(movie="Movie to mark as watched (start typing to search the stash)")
+    async def watched_mark(self, interaction: discord.Interaction, movie: str):
+        await interaction.response.defer(ephemeral=True)
+        if not interaction.user.guild_permissions.manage_guild:
+            await interaction.followup.send("⛔ Admins only.", ephemeral=True)
+            return
+
+        m = await resolve_movie_by_id(self.bot.storage, interaction, movie)
+        if not m:
+            return
+        if m.status != MovieStatus.STASH:
+            await interaction.followup.send(
+                f"⚠️ **{m.display_title}** is not in the stash (status: `{m.status}`).",
+                ephemeral=True,
+            )
+            return
+
+        await self.bot.storage.update_movie(m.id, status=MovieStatus.WATCHED)
+
+        today = datetime.combine(date.today(), datetime.min.time(), tzinfo=timezone.utc)
+        await self.bot.storage.add_schedule_entry(m.id, scheduled_for=today)
+
+        await interaction.followup.send(
+            f"✅ Marked **{m.display_title}** as watched.", ephemeral=True
+        )
+        if interaction.channel is not None:
+            await interaction.channel.send(
+                embed=movie_card(m, title_prefix="✅ Marked as watched: ")
+            )
+
+    @watched_mark.autocomplete("movie")
+    async def _watched_mark_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> list[app_commands.Choice[str]]:
+        return await autocomplete_movies(interaction, current, [MovieStatus.STASH])
 
     # ── /skipped list ────────────────────────────────────────────────────
 

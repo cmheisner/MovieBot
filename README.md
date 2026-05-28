@@ -63,11 +63,18 @@ Use `/help` in Discord for a quick in-bot reference.
 |---|---|---|
 | `/reviews` | `title`, `count` *(default: 3, max 5)* | Post the lowest-rated audience reviews for a movie via Metacritic. Defaults to the next scheduled movie if no title is given. |
 
+### 📜 History
+
+| Command | Parameters | Description |
+|---|---|---|
+| `/watched list` | — | List all movies that have been watched, sorted newest first. |
+| `/watched mark` | `movie` *(required, autocomplete)* | Mark a stash movie as already watched (admin only). Moves it out of the stash and records today as the watch date. |
+| `/skipped list` | — | List movies that were skipped or removed from the stash. |
+
 ### ✅ Quick Actions
 
 | Command | Parameters | Description |
 |---|---|---|
-| `/watched` | `title` *(required)*, `year` | Mark a movie as watched and clean up its Discord event. Shortcut for `/stash watched`. |
 | `/help` | — | Show all available commands. |
 
 ---
