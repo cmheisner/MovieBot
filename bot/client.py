@@ -19,7 +19,7 @@ log = logging.getLogger(__name__)
 
 COGS = [
     "bot.cogs.stash",
-    "bot.cogs.poll",
+    "bot.cogs.reactions",
     "bot.cogs.schedule",
     "bot.cogs.reviews",
     "bot.cogs.seasons",
@@ -80,6 +80,7 @@ class MovieBotClient(commands.Bot):
     def __init__(self, config: BotConfig) -> None:
         intents = discord.Intents.default()
         intents.guild_scheduled_events = True
+        intents.message_content = True  # auto-react reads message text (privileged intent)
 
         super().__init__(
             command_prefix="!",  # slash commands are primary; prefix is fallback

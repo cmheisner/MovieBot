@@ -7,13 +7,11 @@ import discord
 
 from bot.constants import TZ_EASTERN
 from bot.models.movie import Movie
-from bot.models.poll import Poll, PollEntry
 from bot.models.schedule_entry import ScheduleEntry
 from bot.utils.time_utils import format_dt_eastern
 
 
 STASH_COLOR = discord.Color.blurple()
-POLL_COLOR = discord.Color.gold()
 SCHEDULE_COLOR = discord.Color.green()
 EVENT_COLOR = discord.Color.og_blurple()
 
@@ -201,40 +199,6 @@ def stash_list_embeds(
     embeds[0].title = title
     embeds[-1].set_footer(text=footer)
     return embeds
-
-
-def poll_embed(
-    movies: list[Movie],
-    entries: list[PollEntry],
-    closes_at_str: Optional[str] = None,
-    target_date_str: Optional[str] = None,
-    plex_availability: dict[int, bool] | None = None,
-    page_index: int = 1,
-    total_pages: int = 1,
-) -> discord.Embed:
-    title = "🗳️ Movie Night Vote!"
-    if total_pages > 1:
-        title = f"🗳️ Movie Night Vote — Page {page_index} of {total_pages}"
-    description = "React below to vote for the next movie night pick."
-    if target_date_str:
-        description += f"\n🎬 Movie night: **{target_date_str}**"
-    embed = discord.Embed(
-        title=title,
-        description=description,
-        color=POLL_COLOR,
-    )
-    for entry in entries:
-        movie = next((m for m in movies if m.id == entry.movie_id), None)
-        if movie:
-            plex_tag = " 📀" if plex_availability and plex_availability.get(movie.id) else ""
-            embed.add_field(
-                name=f"{entry.emoji} {movie.display_title}{plex_tag}",
-                value=movie.notes or (movie.omdb_data or {}).get("Plot", "") or "\u200b",
-                inline=False,
-            )
-    if closes_at_str:
-        embed.set_footer(text=f"Voting closes: {closes_at_str}")
-    return embed
 
 
 def build_calendar_content(

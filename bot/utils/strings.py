@@ -46,13 +46,6 @@ DEFAULT_BOT_STRINGS: list[tuple[str, str, str]] = [
         "Placeholders: {movie}, {role_mentions}, {date}",
     ),
     (
-        "poll_announcement",
-        "🗳️ A new poll is live! Head to {general_channel} to vote for "
-        "the next Movie Night pick.",
-        "Posted to #news when /poll create opens a new poll. "
-        "Placeholders: {general_channel}",
-    ),
-    (
         "bot_back_online",
         "{mention}✅ MovieBot {verb} — back online. (HEAD: {sha})",
         "Posted after a clean restart. "

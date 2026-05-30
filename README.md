@@ -43,13 +43,17 @@ Use `/help` in Discord for a quick in-bot reference.
 | `/schedule move` | `movie` *(required, autocomplete)*, `new_date` *(autocomplete)* | Move a scheduled movie to a new date. Offers a swap UI if the target date is already taken. |
 | `/schedule calendar` | `month` *(1–12)*, `year` | Show a month-view calendar with movie nights highlighted. |
 
-### 🗳️ Poll
+### 🗳️ Voting
 
-| Command | Parameters | Description |
-|---|---|---|
-| `/poll create` | `season` *(required)*, `date`, `duration_hours` *(default: 24)* | Create a poll from all stash movies in a season (staff only). |
-| `/poll list` | — | Show current vote tallies for the open poll. |
-| `/poll close` | — | Close voting and post ranked results. The winner moves to **Scheduled**; all other nominees return to **Stash**. Triggers a #news announcement. |
+Voting is reaction-based — there are no poll commands. A **staff** member posts a movie list in **#general** where every line begins with an emoji, for example:
+
+```
+🛸 The Predator (2018)
+🦖 Jurassic Park (1993)
+⚔️ Braveheart (1995)
+```
+
+The bot automatically adds each line's leading emoji as a reaction so the group votes by clicking. It only adds the reactions — it does not tally votes or pick a winner; you read the counts. Discord caps reactions at 20 per message, so if a list is longer the bot reacts to the first 20 and replies noting how many were skipped (split the list across two messages to cover more).
 
 ### 💩 Reviews
 
@@ -84,7 +88,7 @@ The bot runs several background tasks without any manual intervention:
 | **Discord events** | Daily noon ET + every restart | Creates Discord Scheduled Events for movies within 7 days; deletes events for movies outside the window or already watched |
 | **Auto-watched** | Daily 2 AM ET | Marks any scheduled movies whose date has passed as **Watched** and deletes their Discord events |
 | **Movie night reminder** | Daily 10 PM ET | Pings genre roles in #news 30 minutes before movie night (10:30 PM ET) |
-| **#news announcement** | On poll close or `/schedule add` | Pings matching genre roles in #news with the movie title and scheduled date |
+| **#news announcement** | On `/schedule add` | Pings matching genre roles in #news with the movie title and scheduled date |
 | **Duplicate scan** | Daily 6 AM ET | Marks duplicate stash entries as skipped |
 | **Integrity check** | Every restart (5s delay) | Resets nominated movies with no open poll, cleans up orphaned schedule entries |
 

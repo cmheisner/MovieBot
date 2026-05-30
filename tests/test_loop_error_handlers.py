@@ -1,7 +1,7 @@
 """Regression guard: every @tasks.loop in the bot must have a registered @<loop>.error handler.
 
 Without one, an unhandled exception silently stops the loop — discord.py's default
-behaviour. The bot keeps running but the background task (auto-close polls, auto-mark
+behaviour. The bot keeps running but the background task (auto-mark
 watched, schedule refresh, etc.) dies until next restart.
 
 These tests inspect each cog's class attributes: the @<loop>.error decorator both
@@ -28,11 +28,6 @@ def _assert_loop_has_error_handler(cog_cls, loop_name: str) -> None:
         f"{cog_cls.__name__}.{loop_name}_error exists but is not registered "
         f"via @{loop_name}.error decorator"
     )
-
-
-def test_poll_cog_auto_close_loop_has_error_handler():
-    from bot.cogs.poll import PollCog
-    _assert_loop_has_error_handler(PollCog, "auto_close_loop")
 
 
 @pytest.mark.parametrize(

@@ -793,20 +793,6 @@ class MaintenanceCog(commands.Cog, name="Maintenance"):
         except Exception:
             log.exception("on_scheduled_event_update handler failed.")
 
-    # ── #news genre role announcement ────────────────────────────────────
-
-    async def post_poll_announcement(self, general_ch: discord.TextChannel) -> None:
-        """Notify #news that a new poll is live."""
-        news_ch = self.bot.get_channel(self.bot.config.news_channel_id)
-        if not news_ch:
-            return
-        try:
-            await news_ch.send(
-                await strings.get("poll_announcement", general_channel=general_ch.mention)
-            )
-        except Exception as exc:
-            log.error("Poll announcement: failed to post: %s", exc)
-
 
 async def setup(bot: commands.Bot) -> None:
     await bot.add_cog(MaintenanceCog(bot))

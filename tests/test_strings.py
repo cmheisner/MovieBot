@@ -81,9 +81,11 @@ def test_get_falls_back_to_default_when_storage_raises():
     storage.get_bot_strings.side_effect = RuntimeError("sheets down")
     strings.attach_storage(storage)
 
-    result = asyncio.run(strings.get("poll_announcement", general_channel="#general"))
-    assert "#general" in result
-    assert "new poll is live" in result
+    result = asyncio.run(
+        strings.get("schedule_announcement", movie="Heat", role_mentions="", date="Friday")
+    )
+    assert "Heat" in result
+    assert "added to Movie Night" in result
 
 
 def test_default_bot_strings_index_is_in_sync():

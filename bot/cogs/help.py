@@ -43,16 +43,6 @@ class HelpCog(commands.Cog, name="Help"):
         )
 
         embed.add_field(
-            name="🗳️ Poll",
-            value=(
-                "`/poll create` — [Staff] Create a poll from a season's stash movies\n"
-                "`/poll list` — Show current vote tallies\n"
-                "`/poll close` — Close voting and post a ranked list"
-            ),
-            inline=False,
-        )
-
-        embed.add_field(
             name="✅ Watched / 🗑️ Skipped",
             value=(
                 "`/watched list` — Browse movies that have been watched\n"

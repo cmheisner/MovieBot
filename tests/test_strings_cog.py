@@ -148,11 +148,11 @@ def test_get_works_for_default_only_key_not_in_storage():
     cog = StringsCog(bot)
     interaction = _interaction()
 
-    asyncio.run(cog.strings_get.callback(cog, interaction, "poll_announcement"))
+    asyncio.run(cog.strings_get.callback(cog, interaction, "schedule_announcement"))
 
     interaction.followup.send.assert_awaited_once()
     embed = interaction.followup.send.await_args.kwargs["embed"]
-    assert "poll_announcement" in embed.title
+    assert "schedule_announcement" in embed.title
 
 
 # ── /strings set ────────────────────────────────────────────────────────────

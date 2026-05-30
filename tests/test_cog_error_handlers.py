@@ -2,7 +2,7 @@
 
 Without this hook, unhandled exceptions inside a command leak to users as raw
 Python tracebacks instead of a friendly "Sheets is rate-limiting us" message.
-The pattern lives in admin.py / schedule.py; we verify all seven slash-command
+The pattern lives in admin.py / schedule.py; we verify all six slash-command
 cogs implement it so future additions don't regress.
 """
 from __future__ import annotations
@@ -15,7 +15,6 @@ import pytest
 _COGS_WITH_HANDLER = [
     ("bot.cogs.admin", "AdminCog"),
     ("bot.cogs.schedule", "ScheduleCog"),
-    ("bot.cogs.poll", "PollCog"),
     ("bot.cogs.stash", "StashCog"),
     ("bot.cogs.reviews", "ReviewsCog"),
     ("bot.cogs.history", "HistoryCog"),
