@@ -38,6 +38,47 @@ def test_first_emoji(line, expected):
     assert first_emoji(line) == expected
 
 
+@pytest.mark.parametrize(
+    "line,expected",
+    [
+        ("<:popcorn:123456789012345678> Snack Shack (2024)", "popcorn:123456789012345678"),
+        ("<a:spin:987654321098765432> Baby Driver (2017)", "spin:987654321098765432"),  # animated
+        ("  <:reel:42> leading spaces", "reel:42"),
+        ("<3 not an emoji", None),                # heart text, not a custom-emoji token
+        ("<:malformed:> nope", None),             # no id
+        ("plain <:notleading:1> text", None),     # token not at line start
+    ],
+)
+def test_first_emoji_custom_discord(line, expected):
+    assert first_emoji(line) == expected
+
+
+def test_custom_emoji_token_matches_discord_reaction_format():
+    # Our normalized token must equal what discord.py sends for the equivalent
+    # PartialEmoji — otherwise add_reaction would 400 on custom (esp. animated).
+    from discord import PartialEmoji
+    from discord.message import convert_emoji_reaction
+
+    static = first_emoji("<:popcorn:123> X")
+    animated = first_emoji("<a:spin:456> Y")
+    assert convert_emoji_reaction(static) == PartialEmoji(name="popcorn", id=123)._as_reaction()
+    assert convert_emoji_reaction(animated) == PartialEmoji(name="spin", id=456, animated=True)._as_reaction()
+
+
+def test_parse_vote_emojis_mixes_unicode_and_custom():
+    content = "\n".join([
+        "🛸 The Predator (2018)",
+        "<:popcorn:123> Snack Shack (2024)",
+        "🦖 Jurassic Park (1993)",
+    ])
+    assert parse_vote_emojis(content) == ["🛸", "popcorn:123", "🦖"]
+
+
+def test_parse_vote_emojis_dedupes_custom_by_id():
+    content = "🛸 A\n<:popcorn:123> B\n<:popcorn:123> C"
+    assert parse_vote_emojis(content) == ["🛸", "popcorn:123"]
+
+
 def test_parse_vote_emojis_survives_misc_technical_emoji():
     # Regression: ⏰ (U+23F0) sits in a Unicode block the coarse table once
     # missed; one unrecognized interior line broke the contiguous run and

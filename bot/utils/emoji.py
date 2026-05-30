@@ -4,13 +4,23 @@ Staff post a themed movie list in #general where every line starts with an
 emoji; the bot reacts with each line's leading emoji so people vote by clicking.
 `first_emoji` pulls that leading emoji out of a single line.
 
-Stdlib only — no `emoji`/`regex`/`grapheme` dependency. We grab the first
-grapheme cluster of the line and do a coarse "is this an emoji?" check. Discord
-is the real validator: `Message.add_reaction` rejects anything that isn't a
-usable emoji, so the caller skips failures rather than relying on this being
+Stdlib only — no third-party `emoji`/`regex`/`grapheme` dependency. We grab the
+first grapheme cluster of the line and do a coarse "is this an emoji?" check.
+Discord is the real validator: `Message.add_reaction` rejects anything that isn't
+a usable emoji, so the caller skips failures rather than relying on this being
 exhaustive.
+
+Custom Discord emoji (`<:name:id>` / animated `<a:name:id>`) are also recognized
+and returned as the canonical `name:id` reaction token that `add_reaction`
+accepts directly.
 """
 from __future__ import annotations
+import re
+
+# Custom Discord emoji in message content: <:name:id> or animated <a:name:id>.
+# We normalize to the canonical "name:id" reaction token (no leading colon, no
+# 'a:' prefix) — that's what add_reaction wants for both static and animated.
+_CUSTOM_EMOJI_RE = re.compile(r"<a?:(\w+):(\d+)>")
 
 _VS16 = "️"          # variation selector that forces emoji presentation (⚔️ ☢️)
 _ZWJ = "‍"           # zero-width joiner (family / profession sequences)
@@ -51,10 +61,19 @@ def _looks_emoji(ch: str) -> bool:
 
 
 def first_emoji(line: str) -> str | None:
-    """Return the leading emoji grapheme of a line, or None if it doesn't start with one."""
+    """Return the leading emoji of a line, or None if it doesn't start with one.
+
+    Custom Discord emoji come back as the `name:id` reaction token; unicode emoji
+    come back as their (possibly multi-codepoint) grapheme.
+    """
     s = line.strip()
     if not s:
         return None
+
+    # Custom Discord emoji are a complete token, not a unicode grapheme.
+    custom = _CUSTOM_EMOJI_RE.match(s)
+    if custom:
+        return f"{custom.group(1)}:{custom.group(2)}"
 
     first = s[0]
 

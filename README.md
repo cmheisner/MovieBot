@@ -53,7 +53,7 @@ Voting is reaction-based — there are no poll commands. A **staff** member post
 ⚔️ Braveheart (1995)
 ```
 
-The bot automatically adds each line's leading emoji as a reaction so the group votes by clicking. It only adds the reactions — it does not tally votes or pick a winner; you read the counts. Discord caps reactions at 20 per message, so if a list is longer the bot reacts to the first 20 and replies noting how many were skipped (split the list across two messages to cover more).
+The bot automatically adds each line's leading emoji as a reaction so the group votes by clicking. It only adds the reactions — it does not tally votes or pick a winner; you read the counts. Both standard emoji and this server's custom emoji (`<:name:id>`) work as leading emoji. Discord caps reactions at 20 per message, so if a list is longer the bot reacts to the first 20 and replies noting how many were skipped (split the list across two messages to cover more).
 
 ### 💩 Reviews
 
