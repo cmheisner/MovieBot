@@ -324,7 +324,14 @@ class PollCog(commands.Cog, name="Poll"):
         vote_counts: dict[int, int] = {}
         movies_by_id = {}
 
+        # get_channel is a cache lookup that can miss after a reconnect; fall back
+        # to a REST fetch before giving up so vote tallies survive a cold cache.
         general_ch = self.bot.get_channel(int(poll.channel_id))
+        if not general_ch:
+            try:
+                general_ch = await self.bot.fetch_channel(int(poll.channel_id))
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                general_ch = None
         if not general_ch:
             return vote_counts, movies_by_id
 
@@ -358,9 +365,15 @@ class PollCog(commands.Cog, name="Poll"):
 
         ranked = _rank_entries(poll.entries, vote_counts, movies_by_id)
 
-        # Return every nominated movie to stash; the Staff will use /schedule add manually.
+        # Return every nominee to stash; the Staff will use /schedule add manually.
+        # This MUST be independent of _fetch_votes: vote tallying can fail (channel
+        # out of cache, poll messages deleted) and return an empty movies_by_id,
+        # but the status reset still has to run — otherwise nominees get stranded
+        # in NOMINATED and vanish from the stash. So we fetch each movie directly
+        # here rather than relying on movies_by_id. The NOMINATED guard avoids
+        # clobbering a movie that was meanwhile scheduled/watched.
         for entry in poll.entries:
-            movie = movies_by_id.get(entry.movie_id)
+            movie = await self.bot.storage.get_movie(entry.movie_id)
             if movie and movie.status == MovieStatus.NOMINATED:
                 await self.bot.storage.update_movie(entry.movie_id, status=MovieStatus.STASH)
 
