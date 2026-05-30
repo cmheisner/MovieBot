@@ -23,6 +23,11 @@ from bot.utils.emoji import first_emoji, parse_vote_emojis
         ("☀️ Sunshine (2007)", "☀️"),             # base + VS16
         ("🪱 Tremors series — Tremors (1990)", "🪱"),
         ("  🎬 leading spaces", "🎬"),
+        ("⏰ Back to the Future (1985)", "⏰"),      # U+23F0 Misc Technical block
+        ("⌚ A Clockwork Orange (1971)", "⌚"),      # U+231A clock
+        ("⏩ Fast Five (2011)", "⏩"),               # U+23E9 media control
+        ("▶️ Play It Again, Sam (1972)", "▶️"),     # U+25B6 geometric + VS16
+        ("Ⓜ️ The Matrix (1999)", "Ⓜ️"),            # U+24C2 circled M
         ("Just plain text", None),
         ("", None),
         ("   ", None),
@@ -31,6 +36,18 @@ from bot.utils.emoji import first_emoji, parse_vote_emojis
 )
 def test_first_emoji(line, expected):
     assert first_emoji(line) == expected
+
+
+def test_parse_vote_emojis_survives_misc_technical_emoji():
+    # Regression: ⏰ (U+23F0) sits in a Unicode block the coarse table once
+    # missed; one unrecognized interior line broke the contiguous run and
+    # dropped the WHOLE message (the live "second message" bug, 2026-05-29).
+    content = "\n".join([
+        "👻 Ghostbusters (1984)",
+        "⏰ Back to the Future (1985)",
+        "🌱 Up in Smoke (1978)",
+    ])
+    assert parse_vote_emojis(content) == ["👻", "⏰", "🌱"]
 
 
 def test_parse_vote_emojis_happy_path():

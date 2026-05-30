@@ -21,16 +21,32 @@ def _is_regional_indicator(ch: str) -> bool:
     return "\U0001F1E6" <= ch <= "\U0001F1FF"
 
 
+# Stray emoji codepoints that live outside the contiguous blocks below.
+# (© ® ‼ ⁉ ™ ℹ Ⓜ ⤴ ⤵ 〰 〽 ㊗ ㊙)
+_LONE_EMOJI_CODEPOINTS = frozenset({
+    0x00A9, 0x00AE, 0x203C, 0x2049, 0x2122, 0x2139,
+    0x24C2, 0x2934, 0x2935, 0x3030, 0x303D, 0x3297, 0x3299,
+})
+
+
 def _looks_emoji(ch: str) -> bool:
-    """Coarse check: could this single codepoint begin an emoji grapheme?"""
+    """Coarse check: could this single codepoint begin an emoji grapheme?
+
+    These ranges over-include some non-emoji symbols, which is fine: Discord is
+    the real validator on the reaction call, and a missed *gap* here is far worse
+    than over-inclusion — one unrecognized leading emoji breaks the contiguous
+    run in parse_vote_emojis and drops the whole message (see that docstring).
+    """
     cp = ord(ch)
     return (
         0x1F000 <= cp <= 0x1FAFF       # pictographs + supplemental + symbols
         or 0x2600 <= cp <= 0x27BF      # misc symbols + dingbats (⚔ ☢ ☀ ⚓ …)
+        or 0x2300 <= cp <= 0x23FF      # technical: clocks ⏰⌚, media ⏩⏪⏸, ⌨ ⏏
+        or 0x25A0 <= cp <= 0x25FF      # geometric shapes (▶ ◀ ■ ▪ ◻ …)
         or 0x2190 <= cp <= 0x21FF      # arrows (used with VS16)
         or 0x2B00 <= cp <= 0x2BFF      # stars / arrows (⭐ ⬆ …)
         or _is_regional_indicator(ch)
-        or cp in (0x203C, 0x2049, 0x2122, 0x2139)
+        or cp in _LONE_EMOJI_CODEPOINTS
     )
 
 
