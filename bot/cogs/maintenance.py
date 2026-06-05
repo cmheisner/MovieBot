@@ -714,18 +714,20 @@ class MaintenanceCog(commands.Cog, name="Maintenance"):
     # ── #news genre role announcement ────────────────────────────────────
 
     async def post_schedule_announcement(self, movie: Movie, scheduled_for: datetime) -> None:
-        """Post a genre-tagged announcement to #news and refresh #schedule."""
+        """Post a schedule announcement to #news and refresh #schedule.
+
+        No role pings here — genre roles are only pinged by the 30-minute
+        reminder. role_mentions is still passed (empty) so older stored
+        templates containing {role_mentions} keep formatting cleanly.
+        """
         news_ch = self.bot.get_channel(self.bot.config.news_channel_id)
         if not news_ch:
             log.warning("News announcement: #news channel not configured or not found.")
         else:
-            guild = self.bot.get_guild(self.bot.config.guild_id)
-            role_mentions = build_role_mention_string(guild, movie) if guild else ""
-
             date_str = format_dt_eastern(scheduled_for)
             msg = await strings.get(
                 "schedule_announcement",
-                role_mentions=role_mentions,
+                role_mentions="",
                 movie=movie.display_title,
                 date=date_str,
             )

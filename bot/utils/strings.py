@@ -40,10 +40,11 @@ DEFAULT_BOT_STRINGS: list[tuple[str, str, str]] = [
     ),
     (
         "schedule_announcement",
-        "{role_mentions}🎬 **{movie}** has been added to Movie Night! "
+        "🎬 **{movie}** has been added to Movie Night! "
         "Scheduled for **{date}**.",
         "Posted to #news when /schedule add succeeds. "
-        "Placeholders: {movie}, {role_mentions}, {date}",
+        "No role pings — those happen in the 30-minute reminder. "
+        "Placeholders: {movie}, {date}",
     ),
     (
         "bot_back_online",
