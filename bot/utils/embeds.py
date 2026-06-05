@@ -83,6 +83,24 @@ def _movie_line(m: Movie, *, on_plex: bool = False, watch_date=None) -> str:
 _DESC_CHUNK_CAP = 3800
 
 
+def build_coming_up_description(lines: list[str], max_chars: int = _DESC_CHUNK_CAP) -> str:
+    """Fit as many schedule lines as possible into one embed description.
+
+    Single-message embeds (like #schedule's Coming Up list) can't paginate,
+    so overflow becomes a trailing count instead of extra messages.
+    """
+    shown: list[str] = []
+    used = 0
+    for i, line in enumerate(lines):
+        if used + len(line) + 1 > max_chars:
+            hidden = len(lines) - i
+            shown.append(f"_…and {hidden} more — `/schedule list` shows the full schedule._")
+            break
+        shown.append(line)
+        used += len(line) + 1
+    return "\n".join(shown)
+
+
 def _chunk_sections_into_descriptions(
     sections: list[tuple[Optional[str], list[str]]],
     max_chars: int = _DESC_CHUNK_CAP,

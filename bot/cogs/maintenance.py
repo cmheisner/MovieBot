@@ -12,7 +12,7 @@ from bot.constants import TZ_EASTERN
 from bot.models.movie import Movie, MovieStatus
 from bot.utils.apple_tv import find_apple_tv_url, resolve_event_image
 from bot.utils.genres import build_role_mention_string
-from bot.utils.embeds import SCHEDULE_COLOR, stash_list_embeds
+from bot.utils.embeds import SCHEDULE_COLOR, build_coming_up_description, stash_list_embeds
 from bot.utils.refresh_state import (
     fingerprint_embeds,
     load_fingerprint,
@@ -642,7 +642,7 @@ class MaintenanceCog(commands.Cog, name="Maintenance"):
 
         # Embed 2: upcoming schedule list (plain text — no code blocks so it renders full width)
         upcoming_movies = []
-        for e in upcoming[1:11]:
+        for e in upcoming[1:]:
             m = await self.bot.storage.get_movie(e.movie_id)
             if m:
                 upcoming_movies.append((e, m))
@@ -666,7 +666,7 @@ class MaintenanceCog(commands.Cog, name="Maintenance"):
         if lines:
             schedule_embed = discord.Embed(
                 title="🗓️ Coming Up",
-                description="\n".join(lines),
+                description=build_coming_up_description(lines),
                 color=SCHEDULE_COLOR,
             )
             schedule_embed.set_footer(text="Movie nights: Wed & Thu at 10:30 PM ET")
