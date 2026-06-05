@@ -1,9 +1,19 @@
 from __future__ import annotations
+import asyncio
 import logging
+import time
 
 import aiohttp
 
 log = logging.getLogger(__name__)
+
+# How long a title's availability result stays fresh. A movie added to Plex
+# may take up to this long to show the 📀 indicator.
+_CACHE_TTL_SEC = 15 * 60
+# After a failed request, skip Plex entirely for this long before re-probing.
+# Keeps an unreachable Plex from costing one full timeout per movie checked.
+_UNREACHABLE_COOLDOWN_SEC = 5 * 60
+_REQUEST_TIMEOUT_SEC = 8
 
 
 class PlexClient:
@@ -14,6 +24,9 @@ class PlexClient:
         self._token = token
         self._section_id = section_id
         self._unreachable = False
+        self._last_failure_at = 0.0
+        # title.lower() → (available, checked_at monotonic timestamp)
+        self._cache: dict[str, tuple[bool, float]] = {}
 
     def _mark_reachable(self) -> None:
         if self._unreachable:
@@ -30,6 +43,25 @@ class PlexClient:
                 self._base_url, exc,
             )
         self._unreachable = True
+        self._last_failure_at = time.monotonic()
+
+    def _in_unreachable_cooldown(self) -> bool:
+        if not self._unreachable:
+            return False
+        return time.monotonic() - self._last_failure_at < _UNREACHABLE_COOLDOWN_SEC
+
+    def _read_cache(self, key: str) -> bool | None:
+        cached = self._cache.get(key)
+        if cached is None:
+            return None
+        available, checked_at = cached
+        if time.monotonic() - checked_at >= _CACHE_TTL_SEC:
+            del self._cache[key]
+            return None
+        return available
+
+    def _write_cache(self, key: str, available: bool) -> None:
+        self._cache[key] = (available, time.monotonic())
 
     async def ping(self) -> bool:
         """Probe Plex once at startup. Logs a clear error if unreachable."""
@@ -54,7 +86,30 @@ class PlexClient:
             return False
 
     async def check_movie(self, title: str) -> bool:
-        """Return True if a movie matching *title* exists in the Plex library."""
+        """Return True if a movie matching *title* exists in the Plex library.
+
+        Results are cached for 15 minutes. While Plex is in the unreachable
+        cooldown window, returns False immediately without a request.
+        """
+        key = title.lower()
+        cached = self._read_cache(key)
+        if cached is not None:
+            return cached
+        if self._in_unreachable_cooldown():
+            return False
+        found = await self._search_plex(title)
+        if found is None:
+            return False
+        self._write_cache(key, found)
+        return found
+
+    async def check_movies(self, movies: list) -> dict[int, bool]:
+        """Check many movies in parallel. Returns movie.id → availability."""
+        results = await asyncio.gather(*(self.check_movie(m.title) for m in movies))
+        return {m.id: available for m, available in zip(movies, results)}
+
+    async def _search_plex(self, title: str) -> bool | None:
+        """Query the Plex library for *title*. None means the request failed."""
         url = f"{self._base_url}/library/sections/{self._section_id}/search"
         params = {"type": "1", "query": title}
         headers = {
@@ -67,11 +122,11 @@ class PlexClient:
                     url,
                     params=params,
                     headers=headers,
-                    timeout=aiohttp.ClientTimeout(total=8),
+                    timeout=aiohttp.ClientTimeout(total=_REQUEST_TIMEOUT_SEC),
                 ) as resp:
                     if resp.status != 200:
                         log.warning("Plex search returned HTTP %d for %r.", resp.status, title)
-                        return False
+                        return None
                     data = await resp.json()
             self._mark_reachable()
             media = data.get("MediaContainer", {})
@@ -81,7 +136,7 @@ class PlexClient:
             return False
         except Exception as exc:
             self._mark_unreachable(exc)
-            return False
+            return None
 
 
 class NoOpPlexClient:
@@ -92,3 +147,6 @@ class NoOpPlexClient:
 
     async def check_movie(self, title: str) -> bool:
         return False
+
+    async def check_movies(self, movies: list) -> dict[int, bool]:
+        return {m.id: False for m in movies}

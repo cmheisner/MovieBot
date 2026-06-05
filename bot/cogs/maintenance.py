@@ -522,12 +522,7 @@ class MaintenanceCog(commands.Cog, name="Maintenance"):
             log.error("Stash refresh: could not fetch movies: %s", exc)
             return
 
-        plex_availability: dict[int, bool] = {}
-        for m in movies:
-            try:
-                plex_availability[m.id] = await self.bot.plex.check_movie(m.title)
-            except Exception:
-                plex_availability[m.id] = False
+        plex_availability = await self.bot.plex.check_movies(movies)
 
         embeds = stash_list_embeds(movies, status_label="Stash", plex_availability=plex_availability)
         fingerprint = fingerprint_embeds(embeds)
@@ -646,11 +641,15 @@ class MaintenanceCog(commands.Cog, name="Maintenance"):
             all_embeds.append(movie_embed)
 
         # Embed 2: upcoming schedule list (plain text — no code blocks so it renders full width)
-        lines = []
+        upcoming_movies = []
         for e in upcoming[1:11]:
             m = await self.bot.storage.get_movie(e.movie_id)
-            if not m:
-                continue
+            if m:
+                upcoming_movies.append((e, m))
+        plex_availability = await self.bot.plex.check_movies([m for _, m in upcoming_movies])
+
+        lines = []
+        for e, m in upcoming_movies:
             et = _to_eastern(e.scheduled_for)
             day = et.strftime("%d").lstrip("0") or "1"
             date_label = et.strftime(f"%a %b {day}")
@@ -660,7 +659,7 @@ class MaintenanceCog(commands.Cog, name="Maintenance"):
                 if r and r != "N/A":
                     rating_str = f" ⭐{r}"
             plex_str = ""
-            if await self.bot.plex.check_movie(m.title):
+            if plex_availability.get(m.id):
                 plex_str = " 📀"
             lines.append(f"🎬 {date_label} — **{m.display_title}**{rating_str}{plex_str}")
 

@@ -22,7 +22,6 @@ from bot.utils.time_utils import (
 log = logging.getLogger(__name__)
 
 _DATE_FORMATS = ["%Y-%m-%d", "%m/%d/%Y", "%m-%d-%Y", "%m/%d/%y", "%B %d %Y", "%b %d %Y"]
-_PLEX_TIMEOUT_SEC = 8
 
 
 def _parse_date(raw: str) -> datetime | None:
@@ -37,19 +36,6 @@ def _parse_date(raw: str) -> datetime | None:
 def _to_utc(naive_date: datetime) -> datetime:
     naive = naive_date.replace(hour=MOVIE_NIGHT_HOUR, minute=MOVIE_NIGHT_MINUTE, second=0, microsecond=0)
     return naive.replace(tzinfo=TZ_EASTERN).astimezone(dt_timezone.utc)
-
-
-async def _plex_check(plex, title: str) -> bool:
-    try:
-        return await asyncio.wait_for(plex.check_movie(title), timeout=_PLEX_TIMEOUT_SEC)
-    except (asyncio.TimeoutError, Exception):
-        return False
-
-
-async def _plex_map(plex, movies: list) -> dict[int, bool]:
-    """Check Plex availability for many movies in parallel."""
-    results = await asyncio.gather(*(_plex_check(plex, m.title) for m in movies))
-    return {m.id: avail for m, avail in zip(movies, results)}
 
 
 # Conflict window for /schedule move — matches /schedule add's 12-hour check.
@@ -336,8 +322,24 @@ class MoveConflictView(discord.ui.View):
 class ScheduleCog(commands.Cog, name="Schedule"):
     def __init__(self, bot):
         self.bot = bot
+        self._background_tasks: set[asyncio.Task] = set()
 
     schedule = app_commands.Group(name="schedule", description="Manage the movie schedule.")
+
+    def _run_in_background(self, coro, label: str) -> None:
+        """Run slow follow-up work (announcements, channel refreshes) without
+        blocking the command reply. Failures are logged, never user-facing."""
+        task = asyncio.create_task(coro, name=label)
+        self._background_tasks.add(task)
+        task.add_done_callback(self._finish_background_task)
+
+    def _finish_background_task(self, task: asyncio.Task) -> None:
+        self._background_tasks.discard(task)
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc:
+            log.error("Background task %r failed: %s", task.get_name(), exc, exc_info=exc)
 
     # ── /schedule list ────────────────────────────────────────────────────
 
@@ -350,7 +352,7 @@ class ScheduleCog(commands.Cog, name="Schedule"):
             m = await self.bot.storage.get_movie(e.movie_id)
             if m:
                 movies_by_id[e.movie_id] = m
-        plex_availability = await _plex_map(self.bot.plex, list(movies_by_id.values()))
+        plex_availability = await self.bot.plex.check_movies(list(movies_by_id.values()))
         embeds = schedule_embeds(entries, movies_by_id, plex_availability)
         await send_embeds_paginated(interaction, embeds, ephemeral=True)
 
@@ -396,12 +398,17 @@ class ScheduleCog(commands.Cog, name="Schedule"):
             return
 
         await self.bot.storage.update_movie(m.id, status=MovieStatus.SCHEDULED)
-        maintenance = self.bot.get_cog("Maintenance")
-        if maintenance:
-            await maintenance.post_schedule_announcement(m, scheduled_for)
+        # Reply first — the announcement + channel refreshes can take a while
+        # (OMDB, artwork, Plex), and none of it should block the confirmation.
         await interaction.followup.send(
             f"✅ **{m.display_title}** scheduled for **{format_dt_eastern(scheduled_for)}**."
         )
+        maintenance = self.bot.get_cog("Maintenance")
+        if maintenance:
+            self._run_in_background(
+                maintenance.post_schedule_announcement(m, scheduled_for),
+                label=f"schedule-add announcement: {m.display_title}",
+            )
 
     @schedule_add.autocomplete("movie")
     async def _schedule_add_autocomplete(
@@ -623,7 +630,7 @@ class ScheduleCog(commands.Cog, name="Schedule"):
             if m:
                 movies_by_id[e.movie_id] = m
 
-        plex_availability = await _plex_map(self.bot.plex, list(movies_by_id.values()))
+        plex_availability = await self.bot.plex.check_movies(list(movies_by_id.values()))
         embed = build_calendar_embed(year, month, month_entries, movies_by_id, plex_availability)
         await interaction.followup.send(embed=embed)
 

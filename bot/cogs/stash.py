@@ -197,9 +197,7 @@ class StashCog(commands.Cog, name="Stash"):
     async def stash_list(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
         movies = await self.bot.storage.list_movies(status=MovieStatus.STASH)
-        plex_availability = {}
-        for m in movies:
-            plex_availability[m.id] = await self.bot.plex.check_movie(m.title)
+        plex_availability = await self.bot.plex.check_movies(movies)
         embeds = stash_list_embeds(movies, status_label="Stash", plex_availability=plex_availability)
         await send_embeds_paginated(interaction, embeds, ephemeral=True)
 
