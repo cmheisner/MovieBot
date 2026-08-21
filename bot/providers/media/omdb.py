@@ -55,9 +55,14 @@ class OMDBMetadataProvider(MediaMetadataProvider):
     async def fetch_metadata(self, title: str, year: int | None = None) -> Optional[dict]:
         if not self._api_key:
             return None
-        params = {"t": title, "apikey": self._api_key, "plot": "short"}
-        if year:
-            params["y"] = year
+        # Raw IMDB IDs (e.g. "tt0076162") → use ?i= for direct lookup so films
+        # indexed under a different name (e.g. "Hausu" for House 1977) are found.
+        if re.match(r"^tt\d+$", title.strip(), re.IGNORECASE):
+            params = {"i": title.strip(), "apikey": self._api_key, "plot": "short"}
+        else:
+            params = {"t": title, "apikey": self._api_key, "plot": "short"}
+            if year:
+                params["y"] = year
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.get(OMDB_URL, params=params, timeout=aiohttp.ClientTimeout(total=8)) as resp:

@@ -1,6 +1,9 @@
 from __future__ import annotations
 import logging
+import re
 from typing import Optional
+
+_IMDB_ID_RE = re.compile(r"^tt\d+$", re.IGNORECASE)
 
 import discord
 from discord import app_commands
@@ -135,33 +138,47 @@ class StashCog(commands.Cog, name="Stash"):
         # private. On success we post the card publicly via channel.send.
         await interaction.response.defer(ephemeral=True)
 
-        # Strip a trailing "(YYYY)" — users often paste display_title format.
-        # OMDB's fuzzy search chokes on that suffix; we search by bare title
-        # and prefer-match the year against returned results.
-        title, preferred_year = parse_title_year(title)
-
-        results = await self.bot.media.search_titles(title)
-        if not results:
-            await interaction.followup.send(
-                f"⚠️ Could not find **{title}** on OMDB. Please check the title and try again.",
-                ephemeral=True,
-            )
-            return
-        if preferred_year is not None:
-            year_matches = [r for r in results if r.get("Year", "")[:4] == str(preferred_year)]
-            if year_matches:
-                results = year_matches
-        if len(results) == 1:
-            year = int(results[0]["Year"][:4])
-            omdb_data = await self.bot.media.fetch_metadata(title, year)
+        # IMDB ID fast path — if the user passes e.g. "tt0076162", skip title
+        # search and look up directly. Useful for films indexed under a different
+        # name on OMDB (e.g. Hausu for House 1977, foreign-language titles, etc.).
+        if _IMDB_ID_RE.match(title.strip()):
+            omdb_data = await self.bot.media.fetch_metadata(title.strip())
+            if not omdb_data:
+                await interaction.followup.send(
+                    f"⚠️ Could not find IMDB ID **{title}** on OMDB.", ephemeral=True
+                )
+                return
+            title = omdb_data["Title"]
+            year = int(omdb_data["Year"][:4])
+            tags = tags_from_omdb(omdb_data)
         else:
-            view = MovieSelectView(results, bot=self.bot, interaction=interaction, notes=notes, season=season)
-            await interaction.followup.send(
-                f"Found **{len(results)}** results for **{title}** — which one?",
-                view=view,
-                ephemeral=True,
-            )
-            return
+            # Strip a trailing "(YYYY)" — users often paste display_title format.
+            # OMDB's fuzzy search chokes on that suffix; we search by bare title
+            # and prefer-match the year against returned results.
+            title, preferred_year = parse_title_year(title)
+
+            results = await self.bot.media.search_titles(title)
+            if not results:
+                await interaction.followup.send(
+                    f"⚠️ Could not find **{title}** on OMDB. Please check the title and try again.",
+                    ephemeral=True,
+                )
+                return
+            if preferred_year is not None:
+                year_matches = [r for r in results if r.get("Year", "")[:4] == str(preferred_year)]
+                if year_matches:
+                    results = year_matches
+            if len(results) == 1:
+                year = int(results[0]["Year"][:4])
+                omdb_data = await self.bot.media.fetch_metadata(title, year)
+            else:
+                view = MovieSelectView(results, bot=self.bot, interaction=interaction, notes=notes, season=season)
+                await interaction.followup.send(
+                    f"Found **{len(results)}** results for **{title}** — which one?",
+                    view=view,
+                    ephemeral=True,
+                )
+                return
 
         tags = tags_from_omdb(omdb_data)
 
