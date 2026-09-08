@@ -44,6 +44,17 @@ class DevModeTree(app_commands.CommandTree):
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         config = interaction.client.config
 
+        # /update must always be runnable by Staff, in any channel — it's the
+        # escape hatch for a broken channel gate below (e.g. a deleted/stale
+        # bot_testing_channel_id locking dev mode to a channel that no longer
+        # exists). Still subject to /update's own manage_guild permission check.
+        if (
+            interaction.command is not None
+            and interaction.command.qualified_name == "update"
+            and user_has_staff_role(interaction.user, config.staff_role_id)
+        ):
+            return True
+
         if config.dev_mode and config.bot_testing_channel_id:
             if interaction.channel_id != config.bot_testing_channel_id:
                 await interaction.response.send_message(
