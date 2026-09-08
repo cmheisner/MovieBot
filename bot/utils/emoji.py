@@ -60,27 +60,24 @@ def _looks_emoji(ch: str) -> bool:
     )
 
 
-def first_emoji(line: str) -> str | None:
-    """Return the leading emoji of a line, or None if it doesn't start with one.
+def _first_emoji_span(s: str) -> tuple[str, int] | None:
+    """Return (token, char-length consumed in `s`) for its leading emoji, or None.
 
-    Custom Discord emoji come back as the `name:id` reaction token; unicode emoji
-    come back as their (possibly multi-codepoint) grapheme.
+    `s` must already be stripped and non-empty. Shared by `first_emoji` and
+    `first_emoji_and_rest` so both agree on exactly how much of the line the
+    leading emoji occupies.
     """
-    s = line.strip()
-    if not s:
-        return None
-
     # Custom Discord emoji are a complete token, not a unicode grapheme.
     custom = _CUSTOM_EMOJI_RE.match(s)
     if custom:
-        return f"{custom.group(1)}:{custom.group(2)}"
+        return f"{custom.group(1)}:{custom.group(2)}", custom.end()
 
     first = s[0]
 
     # Flags are exactly two regional indicators (🇺🇸 = U+1F1FA U+1F1F8).
     if _is_regional_indicator(first):
         if len(s) >= 2 and _is_regional_indicator(s[1]):
-            return s[:2]
+            return s[:2], 2
         return None
 
     if not _looks_emoji(first):
@@ -100,7 +97,36 @@ def first_emoji(line: str) -> str | None:
         else:
             break
 
-    return s[:i]
+    return s[:i], i
+
+
+def first_emoji(line: str) -> str | None:
+    """Return the leading emoji of a line, or None if it doesn't start with one.
+
+    Custom Discord emoji come back as the `name:id` reaction token; unicode emoji
+    come back as their (possibly multi-codepoint) grapheme.
+    """
+    s = line.strip()
+    if not s:
+        return None
+    span = _first_emoji_span(s)
+    return span[0] if span else None
+
+
+def first_emoji_and_rest(line: str) -> tuple[str, str] | None:
+    """Return (leading emoji token, remaining text after it) for a vote line.
+
+    None if the line doesn't start with an emoji. Used to label vote options
+    (emoji -> its line's text) for the `/schedule add` vote_emoji autocomplete.
+    """
+    s = line.strip()
+    if not s:
+        return None
+    span = _first_emoji_span(s)
+    if span is None:
+        return None
+    emoji, length = span
+    return emoji, s[length:].strip()
 
 
 def parse_vote_emojis(content: str) -> list[str] | None:

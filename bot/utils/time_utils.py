@@ -40,11 +40,17 @@ def next_movie_night_after(after: datetime) -> datetime:
     return slot
 
 
-def format_dt_eastern(dt: datetime) -> str:
+def format_time_eastern_pacific(dt: datetime) -> str:
+    """Return just the time, both zones, e.g. '10:30 PM ET / 7:30 PM PT'."""
     eastern = dt.astimezone(TZ_EASTERN)
     pacific = dt.astimezone(TZ_PACIFIC)
     et_hour = eastern.strftime("%I").lstrip("0") or "12"
     pt_hour = pacific.strftime("%I").lstrip("0") or "12"
     et_str = eastern.strftime(f"{et_hour}:%M %p %Z")
     pt_str = pacific.strftime(f"{pt_hour}:%M %p %Z")
-    return eastern.strftime(f"%A, %B %d %Y") + f" at {et_str} / {pt_str}"
+    return f"{et_str} / {pt_str}"
+
+
+def format_dt_eastern(dt: datetime) -> str:
+    eastern = dt.astimezone(TZ_EASTERN)
+    return eastern.strftime(f"%A, %B %d %Y") + f" at {format_time_eastern_pacific(dt)}"

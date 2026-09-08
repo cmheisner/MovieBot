@@ -16,7 +16,7 @@ from bot.models.movie import Movie, MovieStatus, TAG_NAMES, empty_tags
 from bot.models.poll import Poll, PollEntry, PollStatus
 from bot.models.schedule_entry import ScheduleEntry
 from bot.providers.storage.base import StorageProvider
-from bot.utils.strings import DEFAULT_BOT_STRINGS
+from bot.utils.strings import DEFAULT_BOT_STRINGS, DEFAULT_VALUES
 
 log = logging.getLogger(__name__)
 
@@ -190,6 +190,7 @@ class GoogleSheetsStorageProvider(StorageProvider):
                 self._load_header_map(name)
             self._ensure_poll_entries_message_id_column()
             self._seed_bot_strings()
+            self._repair_bot_strings_defaults()
             log.info("Sheets: loaded header maps: %s", {k: list(v.keys()) for k, v in self._cols.items()})
 
         attempts = (0.0, *_INIT_RETRY_DELAYS)
@@ -852,7 +853,10 @@ class GoogleSheetsStorageProvider(StorageProvider):
         return await asyncio.to_thread(_do)
 
     async def update_schedule_entry(self, entry_id: int, **fields) -> ScheduleEntry:
-        allowed = {"discord_event_id", "posted_msg_id", "scheduled_for"}
+        # voter_ids has no Sheets column (SQLite-only feature) — allowed here
+        # for StorageProvider interface parity; _col_idx below returns None
+        # for it, so the write is a safe no-op on this backend.
+        allowed = {"discord_event_id", "posted_msg_id", "scheduled_for", "voter_ids"}
         update_fields = {k: v for k, v in fields.items() if k in allowed}
         if "scheduled_for" in update_fields and isinstance(update_fields["scheduled_for"], datetime):
             update_fields["scheduled_for"] = update_fields["scheduled_for"].isoformat()
@@ -888,7 +892,8 @@ class GoogleSheetsStorageProvider(StorageProvider):
         if not updates:
             return
 
-        allowed = {"discord_event_id", "posted_msg_id", "scheduled_for"}
+        # voter_ids: see update_schedule_entry — safe no-op on this backend.
+        allowed = {"discord_event_id", "posted_msg_id", "scheduled_for", "voter_ids"}
 
         normalized: dict[int, dict] = {}
         for entry_id, fields in updates.items():
@@ -1039,6 +1044,43 @@ class GoogleSheetsStorageProvider(StorageProvider):
         _retry_call(ws.append_rows, new_rows, value_input_option="RAW")
         self._cache.drop("bot_strings")
         log.info("Sheets: seeded %d default bot_strings row(s).", len(missing))
+
+    # Old stock text -> current DEFAULT_VALUES key, for one-time copy fixes.
+    # Only rows still on the exact old text get overwritten — anything
+    # already customized via /strings is left untouched.
+    _STOCK_TEXT_REPAIRS: dict[str, str] = {
+        "movie_night_reminder": (
+            "🍿 {role_mentions}**{movie}** starts in 30 minutes! "
+            "See you in the https://discord.gg/JzZVnM76Yj 🍿"
+        ),
+    }
+
+    def _repair_bot_strings_defaults(self) -> None:
+        """Fix rows still holding a superseded stock default (e.g. the
+        movie_night_reminder "theatre" typo) in place, without touching
+        rows a staff member has since customized. Runs inside the same
+        `_init` thread as `_seed_bot_strings`.
+        """
+        ws = self._ws("bot_strings")
+        key_col = self._cols["bot_strings"].get("key", 0)
+        value_col_idx = self._col_idx("bot_strings", "value")
+        if value_col_idx is None:
+            return
+        all_rows = _retry_call(ws.get_all_values)
+        fixed = 0
+        for i, r in enumerate(all_rows[1:], start=2):
+            if not r or key_col >= len(r):
+                continue
+            key = r[key_col]
+            old_text = self._STOCK_TEXT_REPAIRS.get(key)
+            if old_text is None or key not in DEFAULT_VALUES:
+                continue
+            if self._get(r, "bot_strings", "value") == old_text:
+                _retry_call(ws.update_cell, i, value_col_idx, DEFAULT_VALUES[key])
+                fixed += 1
+        if fixed:
+            self._cache.drop("bot_strings")
+            log.info("Sheets: repaired %d stock bot_strings value(s).", fixed)
 
     async def get_bot_strings(self) -> dict[str, str]:
         def _do():

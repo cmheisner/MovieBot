@@ -27,9 +27,18 @@ DEFAULT_BOT_STRINGS: list[tuple[str, str, str]] = [
     (
         "movie_night_reminder",
         "🍿 {role_mentions}**{movie}** starts in 30 minutes! "
-        "See you in the https://discord.gg/JzZVnM76Yj 🍿",
+        "See you in the theatre https://discord.gg/JzZVnM76Yj 🍿",
         "Posted to #news 30 min before showtime. "
         "Placeholders: {movie}, {role_mentions}",
+    ),
+    (
+        "movie_night_voter_ping",
+        "{voter_mentions}voted for **{movie}**. See you tonight at {time}!",
+        "Posted to #news at 9 AM Pacific on movie night, pinging the "
+        "specific people who reacted to the movie's #general poll option "
+        "(captured via /schedule add's vote_emoji field). Skipped entirely "
+        "if no voters were captured for the entry. "
+        "Placeholders: {voter_mentions}, {movie}, {time}",
     ),
     (
         "thanks_for_watching",

@@ -12,6 +12,7 @@ from bot.constants import TZ_EASTERN, MOVIE_NIGHT_HOUR, MOVIE_NIGHT_MINUTE
 from bot.models.movie import MovieStatus
 from bot.utils.embeds import build_calendar_embed, schedule_embeds, send_embeds_paginated
 from bot.utils.movie_lookup import autocomplete_movies, resolve_movie_by_id
+from bot.utils.vote_poll import collect_voters, find_latest_vote_message, vote_choices
 from bot.utils.time_utils import (
     aware_utc,
     format_dt_eastern,
@@ -362,12 +363,14 @@ class ScheduleCog(commands.Cog, name="Schedule"):
     @app_commands.describe(
         movie="Movie to schedule (start typing to search the stash or skipped movies)",
         date="Date in YYYY-MM-DD format (defaults to next movie night)",
+        vote_emoji="Emoji from the most recent #general poll — captures its voters for the day-of ping",
     )
     async def schedule_add(
         self,
         interaction: discord.Interaction,
         movie: str,
         date: str | None = None,
+        vote_emoji: str | None = None,
     ):
         await interaction.response.defer()
         m = await resolve_movie_by_id(self.bot.storage, interaction, movie)
@@ -392,16 +395,28 @@ class ScheduleCog(commands.Cog, name="Schedule"):
             scheduled_for = next_movie_night()
 
         try:
-            await self.bot.storage.add_schedule_entry(movie_id=m.id, scheduled_for=scheduled_for)
+            entry = await self.bot.storage.add_schedule_entry(movie_id=m.id, scheduled_for=scheduled_for)
         except ValueError as e:
             await interaction.followup.send(f"⚠️ {e}", ephemeral=True)
             return
 
         await self.bot.storage.update_movie(m.id, status=MovieStatus.SCHEDULED)
+
+        voter_note = ""
+        if vote_emoji:
+            try:
+                vote_msg = await find_latest_vote_message(self.bot, self.bot.config)
+                voters = await collect_voters(vote_msg, vote_emoji) if vote_msg else []
+            except discord.HTTPException:
+                voters = []
+            if voters:
+                await self.bot.storage.update_schedule_entry(entry.id, voter_ids=voters)
+                voter_note = f" Captured {len(voters)} voter(s) for the day-of ping."
+
         # Reply first — the announcement + channel refreshes can take a while
         # (OMDB, artwork, Plex), and none of it should block the confirmation.
         await interaction.followup.send(
-            f"✅ **{m.display_title}** scheduled for **{format_dt_eastern(scheduled_for)}**."
+            f"✅ **{m.display_title}** scheduled for **{format_dt_eastern(scheduled_for)}**.{voter_note}"
         )
         maintenance = self.bot.get_cog("Maintenance")
         if maintenance:
@@ -421,6 +436,22 @@ class ScheduleCog(commands.Cog, name="Schedule"):
         self, interaction: discord.Interaction, current: str
     ) -> list[app_commands.Choice[str]]:
         return await self._open_date_choices(current)
+
+    @schedule_add.autocomplete("vote_emoji")
+    async def _schedule_add_vote_emoji_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> list[app_commands.Choice[str]]:
+        message = await find_latest_vote_message(self.bot, self.bot.config)
+        if message is None:
+            return []
+        current_lower = current.lower()
+        choices: list[app_commands.Choice[str]] = []
+        for emoji, label in vote_choices(message):
+            name = f"{emoji} {label}".strip()
+            if current_lower and current_lower not in name.lower():
+                continue
+            choices.append(app_commands.Choice(name=name[:100], value=emoji))
+        return choices[:25]
 
     # ── /schedule remove ──────────────────────────────────────────────────
 

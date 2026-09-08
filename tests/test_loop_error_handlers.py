@@ -38,6 +38,7 @@ def _assert_loop_has_error_handler(cog_cls, loop_name: str) -> None:
         "daily_duplicate_scan",
         "auto_mark_watched",
         "movie_night_reminder",
+        "movie_night_voter_ping",
         "auto_create_events",
         "refresh_schedule_channel",
     ],

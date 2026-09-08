@@ -13,3 +13,4 @@ class ScheduleEntry:
     poll_id: Optional[int] = None
     discord_event_id: Optional[str] = None
     posted_msg_id: Optional[str] = None
+    voter_ids: Optional[list[int]] = None

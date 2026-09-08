@@ -11,7 +11,7 @@ from bot.models.movie import Movie, MovieStatus, TAG_NAMES, empty_tags
 from bot.models.poll import Poll, PollEntry
 from bot.models.schedule_entry import ScheduleEntry
 from bot.providers.storage.base import StorageProvider
-from bot.utils.strings import DEFAULT_BOT_STRINGS
+from bot.utils.strings import DEFAULT_BOT_STRINGS, DEFAULT_VALUES
 
 SCHEMA = """
 PRAGMA journal_mode = WAL;
@@ -140,6 +140,10 @@ def _row_to_poll(row: aiosqlite.Row, entries: list[PollEntry]) -> Poll:
 
 
 def _row_to_entry(row: aiosqlite.Row) -> ScheduleEntry:
+    # voter_ids is a migrated column — may be absent on rows queried before
+    # the ALTER landed in-process (same defensive pattern as _row_to_movie).
+    keys = row.keys()
+    voter_ids_raw = row["voter_ids"] if "voter_ids" in keys else None
     return ScheduleEntry(
         id=row["id"],
         movie_id=row["movie_id"],
@@ -148,6 +152,7 @@ def _row_to_entry(row: aiosqlite.Row) -> ScheduleEntry:
         discord_event_id=row["discord_event_id"],
         posted_msg_id=row["posted_msg_id"],
         created_at=_parse_dt(row["created_at"]),
+        voter_ids=json.loads(voter_ids_raw) if voter_ids_raw else None,
     )
 
 
@@ -204,11 +209,34 @@ class SQLiteStorageProvider(StorageProvider):
             except aiosqlite.OperationalError:
                 pass  # Column already exists
 
+        # Migration: schedule_entries gained voter_ids — the Discord user IDs
+        # who reacted to the movie's #general poll option, captured at
+        # /schedule add time so the day-of ping (bot/cogs/maintenance.py) can
+        # @-mention them. Stored as a JSON list; None/absent means "not captured".
+        try:
+            await self._db.execute("ALTER TABLE schedule_entries ADD COLUMN voter_ids TEXT")
+            await self._db.commit()
+        except aiosqlite.OperationalError:
+            pass  # Column already exists
+
         # Seed bot_strings with defaults for keys that aren't already present.
         # INSERT OR IGNORE means user-edited values are preserved across restarts.
         await self._db.executemany(
             "INSERT OR IGNORE INTO bot_strings (key, value, description) VALUES (?, ?, ?)",
             DEFAULT_BOT_STRINGS,
+        )
+        await self._db.commit()
+
+        # Repair: movie_night_reminder was missing "theatre" before the sign-off
+        # link. Only touches rows still on the exact old stock text — anything
+        # already customized via /strings is left untouched.
+        _OLD_MOVIE_NIGHT_REMINDER = (
+            "🍿 {role_mentions}**{movie}** starts in 30 minutes! "
+            "See you in the https://discord.gg/JzZVnM76Yj 🍿"
+        )
+        await self._db.execute(
+            "UPDATE bot_strings SET value = ? WHERE key = 'movie_night_reminder' AND value = ?",
+            (DEFAULT_VALUES["movie_night_reminder"], _OLD_MOVIE_NIGHT_REMINDER),
         )
         await self._db.commit()
 
@@ -555,10 +583,12 @@ class SQLiteStorageProvider(StorageProvider):
         return [_row_to_entry(r) for r in rows]
 
     async def update_schedule_entry(self, entry_id: int, **fields) -> ScheduleEntry:
-        allowed = {"discord_event_id", "posted_msg_id", "scheduled_for"}
+        allowed = {"discord_event_id", "posted_msg_id", "scheduled_for", "voter_ids"}
         update_fields = {k: v for k, v in fields.items() if k in allowed}
         if "scheduled_for" in update_fields and isinstance(update_fields["scheduled_for"], datetime):
             update_fields["scheduled_for"] = update_fields["scheduled_for"].isoformat()
+        if "voter_ids" in update_fields:
+            update_fields["voter_ids"] = json.dumps(update_fields["voter_ids"])
         set_clause = ", ".join(f"{k} = ?" for k in update_fields)
         values = list(update_fields.values()) + [entry_id]
         await self._db.execute(f"UPDATE schedule_entries SET {set_clause} WHERE id = ?", values)

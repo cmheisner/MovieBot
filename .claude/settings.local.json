@@ -34,7 +34,8 @@
       "Bash(venv/Scripts/python.exe *)",
       "Bash(awk -F: '$1 > 700 {print}')",
       "Bash(awk '/2026-04-23 04:07:01/,0' \"/mnt/c/Users/Brand/Downloads/moviebot \\(5\\).log\")",
-      "Bash(awk NR>=1311 && NR<=1360 *)"
+      "Bash(awk NR>=1311 && NR<=1360 *)",
+      "Bash(echo \"exit=$?\")"
     ]
   }
 }

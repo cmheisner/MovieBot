@@ -93,3 +93,17 @@ def test_default_bot_strings_index_is_in_sync():
     keys_in_list = {k for k, _, _ in strings.DEFAULT_BOT_STRINGS}
     keys_in_map = set(strings.DEFAULT_VALUES.keys())
     assert keys_in_list == keys_in_map
+
+
+def test_movie_night_reminder_default_mentions_theatre():
+    assert "theatre" in strings.DEFAULT_VALUES["movie_night_reminder"]
+
+
+def test_movie_night_voter_ping_default_renders():
+    result = asyncio.run(strings.get(
+        "movie_night_voter_ping",
+        voter_mentions="<@1> <@2> ",
+        movie="Heat (1995)",
+        time="10:30 PM ET / 7:30 PM PT",
+    ))
+    assert result == "<@1> <@2> voted for **Heat (1995)**. See you tonight at 10:30 PM ET / 7:30 PM PT!"

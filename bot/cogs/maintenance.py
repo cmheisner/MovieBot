@@ -8,7 +8,7 @@ import aiohttp
 import discord
 from discord.ext import commands, tasks
 
-from bot.constants import TZ_EASTERN
+from bot.constants import TZ_EASTERN, TZ_PACIFIC
 from bot.models.movie import Movie, MovieStatus
 from bot.utils.apple_tv import find_apple_tv_url, resolve_event_image
 from bot.utils.genres import build_role_mention_string
@@ -19,7 +19,7 @@ from bot.utils.refresh_state import (
     save_fingerprint,
 )
 from bot.utils import strings
-from bot.utils.time_utils import format_dt_eastern
+from bot.utils.time_utils import format_dt_eastern, format_time_eastern_pacific
 
 log = logging.getLogger(__name__)
 
@@ -38,6 +38,10 @@ _WATCHED_CHECK_TIME = time(hour=2, minute=0, tzinfo=TZ_EASTERN)
 # Movie night reminder fires at 10:00 PM ET (30 min before 10:30 PM start)
 _REMINDER_TIME = time(hour=22, minute=0, tzinfo=TZ_EASTERN)
 
+# Voter ping (people who reacted to the movie's #general poll option) fires
+# at 9:00 AM Pacific on movie night itself.
+_VOTER_PING_TIME = time(hour=9, minute=0, tzinfo=TZ_PACIFIC)
+
 
 class MaintenanceCog(commands.Cog, name="Maintenance"):
 
@@ -45,6 +49,8 @@ class MaintenanceCog(commands.Cog, name="Maintenance"):
         self.bot = bot
         # Track entry IDs we've already sent reminders for (cleared on restart)
         self._reminded_ids: set[int] = set()
+        # Track entry IDs we've already sent the day-of voter ping for
+        self._voter_pinged_ids: set[int] = set()
 
     # ── Startup ──────────────────────────────────────────────────────────
 
@@ -66,6 +72,8 @@ class MaintenanceCog(commands.Cog, name="Maintenance"):
             self.auto_mark_watched.start()
         if not self.movie_night_reminder.is_running():
             self.movie_night_reminder.start()
+        if not self.movie_night_voter_ping.is_running():
+            self.movie_night_voter_ping.start()
 
     # One-shot delayed startup pass for Discord events (30s after on_ready)
     @tasks.loop(seconds=30, count=1)
@@ -311,6 +319,66 @@ class MaintenanceCog(commands.Cog, name="Maintenance"):
     async def movie_night_reminder_error(self, exc: Exception) -> None:
         log.exception("movie_night_reminder crashed; restarting: %s", exc)
         self.movie_night_reminder.restart()
+
+    # ── Day-of voter ping ────────────────────────────────────────────────
+
+    @tasks.loop(time=_VOTER_PING_TIME)
+    async def movie_night_voter_ping(self) -> None:
+        """At 9 AM Pacific on movie night, @-mention the people who voted for it.
+
+        Only fires for entries where voters were captured via /schedule
+        add's vote_emoji field — entries scheduled without it are skipped
+        silently (no message).
+        """
+        today_et = datetime.now(dt_timezone.utc).astimezone(TZ_EASTERN).date()
+
+        try:
+            entries = await self.bot.storage.list_schedule_entries(upcoming_only=True, limit=10)
+            for entry in entries:
+                scheduled = entry.scheduled_for
+                if scheduled.tzinfo is None:
+                    scheduled = scheduled.replace(tzinfo=dt_timezone.utc)
+
+                if scheduled.astimezone(TZ_EASTERN).date() != today_et:
+                    continue
+                if entry.id in self._voter_pinged_ids:
+                    continue
+                if not entry.voter_ids:
+                    continue
+
+                movie = await self.bot.storage.get_movie(entry.movie_id)
+                if not movie:
+                    continue
+
+                news_ch = self.bot.get_channel(self.bot.config.news_channel_id)
+                if not news_ch:
+                    log.warning("Voter ping: #news channel not found.")
+                    continue
+
+                voter_mentions = " ".join(f"<@{uid}>" for uid in entry.voter_ids) + " "
+
+                await news_ch.send(
+                    await strings.get(
+                        "movie_night_voter_ping",
+                        voter_mentions=voter_mentions,
+                        movie=movie.display_title,
+                        time=format_time_eastern_pacific(scheduled),
+                    )
+                )
+                self._voter_pinged_ids.add(entry.id)
+                log.info("Voter ping: sent for %r (%d voter(s)).", movie.title, len(entry.voter_ids))
+
+        except Exception:
+            log.exception("Voter ping failed with an unexpected error.")
+
+    @movie_night_voter_ping.before_loop
+    async def before_voter_ping(self) -> None:
+        await self.bot.wait_until_ready()
+
+    @movie_night_voter_ping.error
+    async def movie_night_voter_ping_error(self, exc: Exception) -> None:
+        log.exception("movie_night_voter_ping crashed; restarting: %s", exc)
+        self.movie_night_voter_ping.restart()
 
     # ── Auto event creation ──────────────────────────────────────────────
 
