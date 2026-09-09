@@ -450,6 +450,39 @@ class AdminCog(commands.Cog, name="Admin"):
         description="[Admin] Direct message operations.",
     )
 
+    @staticmethod
+    async def _find_message_anywhere(channel, msg_id: int):
+        """Look for msg_id directly in channel, then its threads.
+
+        A message that appears inline in a channel's view can actually live in
+        a thread attached to that channel (a thread reply, or a message a user
+        later turned into a thread starter) — channel.fetch_message only ever
+        sees the channel's own top-level messages, never thread messages, so a
+        message can look "right there" while every direct fetch 404s. Search
+        active threads (cached) and archived threads (paginated fetch) before
+        giving up.
+        """
+        try:
+            return await channel.fetch_message(msg_id), channel
+        except discord.NotFound:
+            pass
+
+        candidate_threads = list(getattr(channel, "threads", []))
+        if hasattr(channel, "archived_threads"):
+            try:
+                async for thread in channel.archived_threads(limit=None):
+                    candidate_threads.append(thread)
+            except (discord.Forbidden, discord.HTTPException):
+                pass
+
+        for thread in candidate_threads:
+            try:
+                return await thread.fetch_message(msg_id), thread
+            except discord.NotFound:
+                continue
+
+        return None, None
+
     @message.command(
         name="delete",
         description="[Admin] Delete a message by ID — for stuck bot posts a user can't remove themselves.",
@@ -478,15 +511,17 @@ class AdminCog(commands.Cog, name="Admin"):
             return
 
         try:
-            target_message = await target_channel.fetch_message(msg_id)
-        except discord.NotFound:
-            await interaction.followup.send(
-                f"⚠️ No message with ID `{msg_id}` found in {target_channel.mention}.", ephemeral=True
-            )
-            return
+            target_message, found_in = await self._find_message_anywhere(target_channel, msg_id)
         except discord.Forbidden:
             await interaction.followup.send(
                 f"⚠️ I don't have permission to read {target_channel.mention}.", ephemeral=True
+            )
+            return
+
+        if target_message is None:
+            await interaction.followup.send(
+                f"⚠️ No message with ID `{msg_id}` found in {target_channel.mention} or its threads.",
+                ephemeral=True,
             )
             return
 
@@ -497,17 +532,17 @@ class AdminCog(commands.Cog, name="Admin"):
             return
         except discord.Forbidden:
             await interaction.followup.send(
-                f"⚠️ I don't have permission to delete that message in {target_channel.mention}.",
+                f"⚠️ I don't have permission to delete that message in {found_in.mention}.",
                 ephemeral=True,
             )
             return
 
         log.info(
             "Message %d in #%s deleted via /message delete by %s (id=%d).",
-            msg_id, target_channel, interaction.user, interaction.user.id,
+            msg_id, found_in, interaction.user, interaction.user.id,
         )
         await interaction.followup.send(
-            f"✅ Deleted message `{msg_id}` from {target_channel.mention}.", ephemeral=True
+            f"✅ Deleted message `{msg_id}` from {found_in.mention}.", ephemeral=True
         )
 
     # ── Error handler ─────────────────────────────────────────────────────
