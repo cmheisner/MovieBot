@@ -443,6 +443,73 @@ class AdminCog(commands.Cog, name="Admin"):
             msg = "✅ Dev mode **off** — normal channel allowlist in effect. Reverts to `.env` on restart."
         await interaction.response.send_message(msg, ephemeral=True)
 
+    # ── /message delete ───────────────────────────────────────────────────
+
+    message = app_commands.Group(
+        name="message",
+        description="[Admin] Direct message operations.",
+    )
+
+    @message.command(
+        name="delete",
+        description="[Admin] Delete a message by ID — for stuck bot posts a user can't remove themselves.",
+    )
+    @app_commands.describe(
+        message_id="The message ID (right-click the message > Copy Message ID; needs Developer Mode on).",
+        channel="Channel the message is in (defaults to the channel this command is run in).",
+    )
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def message_delete(
+        self,
+        interaction: discord.Interaction,
+        message_id: str,
+        channel: Optional[discord.TextChannel] = None,
+    ) -> None:
+        await interaction.response.defer(ephemeral=True)
+        target_channel = channel or interaction.channel
+        if target_channel is None:
+            await interaction.followup.send("⚠️ No channel to operate on.", ephemeral=True)
+            return
+
+        try:
+            msg_id = int(message_id)
+        except ValueError:
+            await interaction.followup.send("⚠️ Message ID must be numeric.", ephemeral=True)
+            return
+
+        try:
+            target_message = await target_channel.fetch_message(msg_id)
+        except discord.NotFound:
+            await interaction.followup.send(
+                f"⚠️ No message with ID `{msg_id}` found in {target_channel.mention}.", ephemeral=True
+            )
+            return
+        except discord.Forbidden:
+            await interaction.followup.send(
+                f"⚠️ I don't have permission to read {target_channel.mention}.", ephemeral=True
+            )
+            return
+
+        try:
+            await target_message.delete()
+        except discord.NotFound:
+            await interaction.followup.send("✅ Already gone — nothing to delete.", ephemeral=True)
+            return
+        except discord.Forbidden:
+            await interaction.followup.send(
+                f"⚠️ I don't have permission to delete that message in {target_channel.mention}.",
+                ephemeral=True,
+            )
+            return
+
+        log.info(
+            "Message %d in #%s deleted via /message delete by %s (id=%d).",
+            msg_id, target_channel, interaction.user, interaction.user.id,
+        )
+        await interaction.followup.send(
+            f"✅ Deleted message `{msg_id}` from {target_channel.mention}.", ephemeral=True
+        )
+
     # ── Error handler ─────────────────────────────────────────────────────
 
     async def cog_app_command_error(
