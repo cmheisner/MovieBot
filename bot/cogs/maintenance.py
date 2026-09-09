@@ -603,8 +603,12 @@ class MaintenanceCog(commands.Cog, name="Maintenance"):
         fingerprint = fingerprint_embeds(embeds)
 
         try:
+            # No limit: this channel is bot-only, so the full history is a
+            # handful of messages — but a capped limit could miss an old
+            # stray message (e.g. left over from a past duplicate-post bug)
+            # sitting past the cutoff, leaving it stuck forever.
             bot_messages = [
-                m async for m in channel.history(limit=20) if m.author == self.bot.user
+                m async for m in channel.history(limit=None) if m.author == self.bot.user
             ]
         except Exception as exc:
             log.warning("Stash refresh: could not read channel history: %s", exc)
@@ -760,8 +764,12 @@ class MaintenanceCog(commands.Cog, name="Maintenance"):
         fingerprint = fingerprint_embeds(all_embeds)
 
         try:
+            # No limit: this channel is bot-only, so the full history is a
+            # handful of messages — but a capped limit could miss an old
+            # stray message (e.g. left over from a past duplicate-post bug)
+            # sitting past the cutoff, leaving it stuck forever.
             bot_messages = [
-                m async for m in channel.history(limit=20) if m.author == self.bot.user
+                m async for m in channel.history(limit=None) if m.author == self.bot.user
             ]
         except Exception as exc:
             log.warning("Schedule refresh: could not read channel history: %s", exc)
