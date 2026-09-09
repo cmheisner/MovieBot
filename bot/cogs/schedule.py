@@ -665,11 +665,31 @@ class ScheduleCog(commands.Cog, name="Schedule"):
         embed = build_calendar_embed(year, month, month_entries, movies_by_id, plex_availability)
         await interaction.followup.send(embed=embed)
 
+    # ── /schedule refresh ──────────────────────────────────────────────────
+
+    @schedule.command(
+        name="refresh",
+        description="[Admin] Force #schedule to clear and repost now, even if nothing changed.",
+    )
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def schedule_refresh(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer(ephemeral=True)
+        maintenance = self.bot.get_cog("Maintenance")
+        if not maintenance:
+            await interaction.followup.send("⚠️ Maintenance cog not loaded.", ephemeral=True)
+            return
+        await maintenance._run_refresh_schedule_channel(force=True)
+        await interaction.followup.send("✅ #schedule cleared and reposted.", ephemeral=True)
+
     # ── Error handler ─────────────────────────────────────────────────────
 
     async def cog_app_command_error(
         self, interaction: discord.Interaction, error: app_commands.AppCommandError
     ) -> None:
+        if isinstance(error, app_commands.MissingPermissions):
+            msg = "⛔ You need the **Manage Server** permission to use this command."
+            await self._send_error(interaction, msg)
+            return
         cause = getattr(error, "original", error)
         if isinstance(cause, APIError):
             status = getattr(getattr(cause, "response", None), "status_code", None)
@@ -682,6 +702,9 @@ class ScheduleCog(commands.Cog, name="Schedule"):
         else:
             msg = "⚠️ Command failed unexpectedly. Check `/logs` for details."
         log.exception("Schedule cog error: %s", error)
+        await self._send_error(interaction, msg)
+
+    async def _send_error(self, interaction: discord.Interaction, msg: str) -> None:
         try:
             if interaction.response.is_done():
                 await interaction.followup.send(msg, ephemeral=True)

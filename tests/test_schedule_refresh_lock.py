@@ -28,7 +28,7 @@ def test_concurrent_refreshes_never_run_the_locked_logic_at_the_same_time():
     concurrent_calls = 0
     max_concurrent = 0
 
-    async def fake_locked_refresh() -> None:
+    async def fake_locked_refresh(force: bool = False) -> None:
         nonlocal concurrent_calls, max_concurrent
         concurrent_calls += 1
         max_concurrent = max(max_concurrent, concurrent_calls)
@@ -46,3 +46,20 @@ def test_concurrent_refreshes_never_run_the_locked_logic_at_the_same_time():
     asyncio.run(fire_two_overlapping_refreshes())
 
     assert max_concurrent == 1
+
+
+def test_force_flag_is_forwarded_through_the_lock():
+    """/schedule refresh calls _run_refresh_schedule_channel(force=True) to
+    bypass the fingerprint skip and clear stuck duplicate messages even when
+    the schedule content itself hasn't changed."""
+    cog = _fake_cog()
+    seen_force_values = []
+
+    async def fake_locked_refresh(force: bool = False) -> None:
+        seen_force_values.append(force)
+
+    cog._run_refresh_schedule_channel_locked = fake_locked_refresh
+
+    asyncio.run(cog._run_refresh_schedule_channel(force=True))
+
+    assert seen_force_values == [True]

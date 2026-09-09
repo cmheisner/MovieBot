@@ -649,11 +649,11 @@ class MaintenanceCog(commands.Cog, name="Maintenance"):
         log.exception("refresh_schedule_channel crashed; restarting: %s", exc)
         self.refresh_schedule_channel.restart()
 
-    async def _run_refresh_schedule_channel(self) -> None:
+    async def _run_refresh_schedule_channel(self, force: bool = False) -> None:
         async with self._schedule_refresh_lock:
-            await self._run_refresh_schedule_channel_locked()
+            await self._run_refresh_schedule_channel_locked(force=force)
 
-    async def _run_refresh_schedule_channel_locked(self) -> None:
+    async def _run_refresh_schedule_channel_locked(self, force: bool = False) -> None:
         channel = self.bot.get_channel(self.bot.config.schedule_channel_id)
         if not channel:
             log.warning("Schedule refresh: could not find #schedule channel.")
@@ -768,7 +768,7 @@ class MaintenanceCog(commands.Cog, name="Maintenance"):
             await self._run_refresh_stash_channel()
             return
 
-        if bot_messages and load_fingerprint("schedule") == fingerprint:
+        if not force and bot_messages and load_fingerprint("schedule") == fingerprint:
             log.info("Schedule refresh: no changes since last post — skipping.")
             await self._run_refresh_stash_channel()
             return
