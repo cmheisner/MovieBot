@@ -207,10 +207,9 @@ On first run the bot automatically creates all required tabs (`movies`, `schedul
 
 ```
 DEV_MODE=true
-BOT_TESTING_CHANNEL_ID=your_test_channel_id
 ```
 
-When `DEV_MODE=true`, all slash commands are rejected (ephemeral error) if run outside the bot-testing channel, and all channel posts are redirected there. Automated tasks (schedule refresh, events, reminders) always post to their real channels regardless of dev mode.
+When `DEV_MODE=true`, all slash commands are rejected (ephemeral error) for anyone without the Staff role, in any channel. Automated tasks (schedule refresh, events, reminders) always post to their real channels regardless of dev mode. Toggle it at runtime with `/dev` (Manage Server permission required) — the runtime value reverts to `.env` on restart.
 
 ---
 

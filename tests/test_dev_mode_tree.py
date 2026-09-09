@@ -1,11 +1,10 @@
-"""Tests for DevModeTree.interaction_check's channel-gating, and the /update
-escape hatch added alongside it.
+"""Tests for DevModeTree.interaction_check.
 
-Regression context: dev mode pins every command to `bot_testing_channel_id`
-with no staff bypass. If that channel is later deleted (as happened live),
-Staff get locked out of every command, including /update — the one command
-that would let them pull a fix. /update must stay runnable by Staff in any
-channel regardless of dev mode or the public channel allowlist.
+Regression context: dev mode used to pin every command to a single
+`bot_testing_channel_id`, with no staff bypass. When that channel was
+deleted, Staff got locked out of every command, including /update — the one
+command that would let them pull a fix. Dev mode now gates by the Staff
+role instead of a channel, so it has no dependency on any channel existing.
 """
 from __future__ import annotations
 
@@ -16,10 +15,9 @@ from unittest.mock import AsyncMock
 from bot.client import DevModeTree
 
 
-def _config(dev_mode=False, bot_testing_channel_id=999, staff_role_id=555, general_channel_id=1):
+def _config(dev_mode=False, staff_role_id=555, general_channel_id=1):
     return SimpleNamespace(
         dev_mode=dev_mode,
-        bot_testing_channel_id=bot_testing_channel_id,
         staff_role_id=staff_role_id,
         general_channel_id=general_channel_id,
         bathroom_channel_id=0,
@@ -53,33 +51,28 @@ def _check(interaction):
     return asyncio.run(DevModeTree.interaction_check(tree, interaction))
 
 
-def test_update_allowed_for_staff_in_any_channel_even_when_dev_mode_locks_a_deleted_channel():
-    config = _config(dev_mode=True, bot_testing_channel_id=999999999)  # stale/deleted channel
+def test_dev_mode_allows_staff_anywhere():
+    config = _config(dev_mode=True)
     interaction = _interaction(config, "update", channel_id=42, is_staff=True)
     assert _check(interaction) is True
 
 
-def test_update_allowed_for_staff_outside_public_allowlist_when_dev_mode_off():
+def test_dev_mode_blocks_non_staff_everywhere():
+    config = _config(dev_mode=True)
+    interaction = _interaction(config, "schedule add", channel_id=1, is_staff=False)
+    assert _check(interaction) is False
+    interaction.response.send_message.assert_awaited_once()
+
+
+def test_dev_mode_off_allows_staff_outside_public_allowlist():
     config = _config(dev_mode=False)
     interaction = _interaction(config, "update", channel_id=42, is_staff=True)
     assert _check(interaction) is True
 
 
-def test_update_still_gated_by_channel_for_non_staff():
+def test_dev_mode_off_gates_non_staff_by_channel():
     config = _config(dev_mode=False)
-    interaction = _interaction(config, "update", channel_id=42, is_staff=False)
-    assert _check(interaction) is False
-
-
-def test_other_commands_still_locked_to_dev_mode_channel_for_staff():
-    # The bypass is /update-specific — dev mode's staff-wide lockout for
-    # every other command is unchanged.
-    config = _config(dev_mode=True, bot_testing_channel_id=999999999)
-    interaction = _interaction(config, "restart", channel_id=42, is_staff=True)
-    assert _check(interaction) is False
-
-
-def test_other_commands_allow_staff_anywhere_when_dev_mode_off():
-    config = _config(dev_mode=False)
-    interaction = _interaction(config, "restart", channel_id=42, is_staff=True)
-    assert _check(interaction) is True
+    allowed = _interaction(config, "some command", channel_id=1, is_staff=False)
+    blocked = _interaction(config, "some command", channel_id=42, is_staff=False)
+    assert _check(allowed) is True
+    assert _check(blocked) is False

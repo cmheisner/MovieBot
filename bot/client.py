@@ -34,37 +34,29 @@ COGS = [
 
 
 class DevModeTree(app_commands.CommandTree):
-    """Gates slash commands by channel.
+    """Gates slash commands by role, not channel.
 
-    - Dev mode on: only #bot-testing, everyone.
+    - Dev mode on: Staff only, in any channel — keeps commands out of regular
+      members' hands during active development without depending on a
+      dedicated testing channel existing.
     - Dev mode off: Staff may run commands anywhere; everyone else is limited to
       the public allowlist (general/bathroom/suggestions/concessions).
     """
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         config = interaction.client.config
+        is_staff = user_has_staff_role(interaction.user, config.staff_role_id)
 
-        # /update must always be runnable by Staff, in any channel — it's the
-        # escape hatch for a broken channel gate below (e.g. a deleted/stale
-        # bot_testing_channel_id locking dev mode to a channel that no longer
-        # exists). Still subject to /update's own manage_guild permission check.
-        if (
-            interaction.command is not None
-            and interaction.command.qualified_name == "update"
-            and user_has_staff_role(interaction.user, config.staff_role_id)
-        ):
-            return True
+        if config.dev_mode:
+            if is_staff:
+                return True
+            await interaction.response.send_message(
+                "🔧 Dev mode is on — commands are Staff-only right now.",
+                ephemeral=True,
+            )
+            return False
 
-        if config.dev_mode and config.bot_testing_channel_id:
-            if interaction.channel_id != config.bot_testing_channel_id:
-                await interaction.response.send_message(
-                    f"🔧 Dev mode: commands only allowed in <#{config.bot_testing_channel_id}>.",
-                    ephemeral=True,
-                )
-                return False
-            return True
-
-        if user_has_staff_role(interaction.user, config.staff_role_id):
+        if is_staff:
             return True
 
         allowed = [

@@ -437,19 +437,8 @@ class AdminCog(commands.Cog, name="Admin"):
             interaction.user, interaction.user.id,
         )
 
-        if new_value and not config.bot_testing_channel_id:
-            await interaction.response.send_message(
-                "🔧 Dev mode **on** — but `BOT_TESTING_CHANNEL_ID` is not configured, "
-                "so commands will not be gated.",
-                ephemeral=True,
-            )
-            return
-
         if new_value:
-            msg = (
-                f"🔧 Dev mode **on** — commands now restricted to "
-                f"<#{config.bot_testing_channel_id}>. Reverts to `.env` on restart."
-            )
+            msg = "🔧 Dev mode **on** — commands now Staff-only, in any channel. Reverts to `.env` on restart."
         else:
             msg = "✅ Dev mode **off** — normal channel allowlist in effect. Reverts to `.env` on restart."
         await interaction.response.send_message(msg, ephemeral=True)
