@@ -51,6 +51,13 @@ class MaintenanceCog(commands.Cog, name="Maintenance"):
         self._reminded_ids: set[int] = set()
         # Track entry IDs we've already sent the day-of voter ping for
         self._voter_pinged_ids: set[int] = set()
+        # Serializes #schedule refreshes. Several independent triggers can call
+        # _run_refresh_schedule_channel close together (daily loop, startup
+        # pass, /schedule add's background task, movie-night-ended listener);
+        # without this lock, two overlapping calls can each read the channel
+        # history before the other has finished deleting/posting, leaving
+        # stale + duplicate embeds stacked in #schedule.
+        self._schedule_refresh_lock = asyncio.Lock()
 
     # ── Startup ──────────────────────────────────────────────────────────
 
@@ -643,6 +650,10 @@ class MaintenanceCog(commands.Cog, name="Maintenance"):
         self.refresh_schedule_channel.restart()
 
     async def _run_refresh_schedule_channel(self) -> None:
+        async with self._schedule_refresh_lock:
+            await self._run_refresh_schedule_channel_locked()
+
+    async def _run_refresh_schedule_channel_locked(self) -> None:
         channel = self.bot.get_channel(self.bot.config.schedule_channel_id)
         if not channel:
             log.warning("Schedule refresh: could not find #schedule channel.")
