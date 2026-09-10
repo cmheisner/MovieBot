@@ -13,7 +13,7 @@ from bot.models.movie import Movie, MovieStatus
 from bot.utils.apple_tv import find_apple_tv_url, resolve_event_image
 from bot.utils.genres import build_role_mention_string
 from bot.utils.embeds import SCHEDULE_COLOR, build_coming_up_description, stash_list_embeds
-from bot.utils.streaming_icons import icon_string, label_string
+from bot.utils.streaming_icons import icon_string, label_string, legend_text
 from bot.utils.refresh_state import (
     fingerprint_embeds,
     load_fingerprint,
@@ -761,6 +761,7 @@ class MaintenanceCog(commands.Cog, name="Maintenance"):
                 description=build_coming_up_description(lines),
                 color=SCHEDULE_COLOR,
             )
+            schedule_embed.add_field(name="Legend", value=legend_text(), inline=False)
             schedule_embed.set_footer(text="Movie nights: Wed & Thu at 10:30 PM ET")
             all_embeds.append(schedule_embed)
         elif not all_embeds:

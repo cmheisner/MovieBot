@@ -1,11 +1,12 @@
 """Coverage for the Watchmode source-name -> icon mapping Brandon picked:
 📀 Plex Private (self-hosted, handled separately by PlexClient) plus
-💿 Plex Free / 🟣 Tubi / ▶️ YouTube / 🪐 Pluto / 📚 Hoopla / 🟥 Netflix /
-🟢 Hulu / ⬛ HBO from Watchmode sources.
+🟣 Tubi / ▶️ YouTube / 🪐 Pluto / 📚 Hoopla / 🟥 Netflix / 🟢 Hulu / ⬛ HBO
+from Watchmode sources. (💿 Plex Free was tried and removed — Watchmode's
+"Plex" source didn't reliably mean free-to-stream in practice.)
 """
 from __future__ import annotations
 
-from bot.utils.streaming_icons import icon_string, icons_for_sources, label_string
+from bot.utils.streaming_icons import icon_string, icons_for_sources, label_string, legend_text
 
 
 def _source(name: str, type_: str = "free") -> dict:
@@ -21,7 +22,6 @@ def test_no_sources_returns_nothing():
 
 def test_exact_name_matches():
     assert icons_for_sources([_source("Tubi TV")]) == [("🟣", "Tubi")]
-    assert icons_for_sources([_source("Plex")]) == [("💿", "Plex Free")]
     assert icons_for_sources([_source("YouTube")]) == [("▶️", "YouTube")]
     assert icons_for_sources([_source("Pluto TV")]) == [("🪐", "Pluto")]
     assert icons_for_sources([_source("Hoopla")]) == [("📚", "Hoopla")]
@@ -30,6 +30,12 @@ def test_exact_name_matches():
 
 def test_unmapped_service_is_silently_ignored():
     assert icons_for_sources([_source("Amazon", "rent")]) == []
+
+
+def test_plex_source_is_not_mapped_to_an_icon():
+    """💿 Plex Free was tried and removed as inaccurate — a "Plex" source
+    from Watchmode should not produce any icon."""
+    assert icons_for_sources([_source("Plex")]) == []
 
 
 def test_hulu_bundle_variant_matches():
@@ -47,10 +53,8 @@ def test_multiple_sources_dedupe_and_keep_priority_order():
         _source("Netflix", "sub"),
         _source("Tubi TV"),
         _source("Tubi TV"),  # duplicate, e.g. different format rows
-        _source("Plex"),
     ]
     assert icons_for_sources(sources) == [
-        ("💿", "Plex Free"),
         ("🟣", "Tubi"),
         ("🟥", "Netflix"),
     ]
@@ -64,3 +68,12 @@ def test_icon_string_is_compact():
 def test_label_string_includes_names():
     sources = [_source("Tubi TV"), _source("YouTube")]
     assert label_string(sources) == "🟣 Tubi · ▶️ YouTube"
+
+
+def test_legend_text_lists_every_icon_starting_with_plex_private():
+    legend = legend_text()
+    assert legend == (
+        "📀 Plex Private · 🟣 Tubi · ▶️ YouTube · 🪐 Pluto · 📚 Hoopla · "
+        "🟥 Netflix · 🟢 Hulu · ⬛ HBO"
+    )
+    assert "Plex Free" not in legend

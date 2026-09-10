@@ -19,7 +19,6 @@ from typing import Callable
 # (icon, label, match) — order is the fixed display priority when a movie
 # has sources for more than one icon.
 _RULES: list[tuple[str, str, Callable[[str], bool]]] = [
-    ("💿", "Plex Free", lambda name: name == "Plex"),
     ("🟣", "Tubi", lambda name: name == "Tubi TV"),
     ("▶️", "YouTube", lambda name: name == "YouTube"),
     ("🪐", "Pluto", lambda name: name == "Pluto TV"),
@@ -49,3 +48,13 @@ def label_string(sources: list[dict] | None) -> str:
     """Icons + labels, e.g. '🟣 Tubi · ▶️ YouTube', for card/footer display."""
     pairs = icons_for_sources(sources)
     return " · ".join(f"{icon} {label}" for icon, label in pairs)
+
+
+def legend_text() -> str:
+    """Static icon key for display in #schedule, e.g. a 'Legend' field.
+
+    Prepends 📀 Plex Private, which isn't in _RULES — it's driven by the
+    separate PlexClient/on_plex flag, not a Watchmode source.
+    """
+    parts = ["📀 Plex Private"] + [f"{icon} {label}" for icon, label, _ in _RULES]
+    return " · ".join(parts)
