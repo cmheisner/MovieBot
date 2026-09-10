@@ -1,5 +1,5 @@
 """Coverage that streaming-source data actually reaches the rendered embeds
-(the Watchmode wiring alongside the existing 📀 Plex Private indicator).
+(the Watchmode wiring alongside the existing 📀 Plex indicator).
 """
 from __future__ import annotations
 
@@ -28,7 +28,7 @@ _TUBI = [{"source_id": 296, "name": "Tubi TV", "type": "free"}]
 def test_movie_card_shows_plex_private_and_streaming_label():
     embed = movie_card(_movie(), on_plex=True, watchmode_sources=_TUBI)
     info_field = next(f for f in embed.fields if f.name in ("Info",))
-    assert "📀 Plex Private" in info_field.value
+    assert "📀 Plex" in info_field.value
     assert "🟣 Tubi" in info_field.value
 
 

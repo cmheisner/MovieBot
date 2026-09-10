@@ -20,7 +20,6 @@ from typing import Callable
 # has sources for more than one icon.
 _RULES: list[tuple[str, str, Callable[[str], bool]]] = [
     ("🟣", "Tubi", lambda name: name == "Tubi TV"),
-    ("▶️", "YouTube", lambda name: name == "YouTube"),
     ("🪐", "Pluto", lambda name: name == "Pluto TV"),
     ("📚", "Hoopla", lambda name: name == "Hoopla"),
     ("🟥", "Netflix", lambda name: name == "Netflix"),
@@ -39,13 +38,13 @@ def icons_for_sources(sources: list[dict] | None) -> list[tuple[str, str]]:
 
 
 def icon_string(sources: list[dict] | None) -> str:
-    """Compact icons-only suffix, e.g. ' 🟣 ▶️', for inline list rows."""
+    """Compact icons-only suffix, e.g. ' 🟣 🪐', for inline list rows."""
     pairs = icons_for_sources(sources)
     return "".join(f" {icon}" for icon, _ in pairs)
 
 
 def label_string(sources: list[dict] | None) -> str:
-    """Icons + labels, e.g. '🟣 Tubi · ▶️ YouTube', for card/footer display."""
+    """Icons + labels, e.g. '🟣 Tubi · 🪐 Pluto', for card/footer display."""
     pairs = icons_for_sources(sources)
     return " · ".join(f"{icon} {label}" for icon, label in pairs)
 
@@ -53,8 +52,8 @@ def label_string(sources: list[dict] | None) -> str:
 def legend_text() -> str:
     """Static icon key for display in #schedule, e.g. a 'Legend' field.
 
-    Prepends 📀 Plex Private, which isn't in _RULES — it's driven by the
+    Prepends 📀 Plex, which isn't in _RULES — it's driven by the
     separate PlexClient/on_plex flag, not a Watchmode source.
     """
-    parts = ["📀 Plex Private"] + [f"{icon} {label}" for icon, label, _ in _RULES]
+    parts = ["📀 Plex"] + [f"{icon} {label}" for icon, label, _ in _RULES]
     return " · ".join(parts)

@@ -714,7 +714,7 @@ class MaintenanceCog(commands.Cog, name="Maintenance"):
 
             on_plex = await self.bot.plex.check_movie(movie.title)
             if on_plex:
-                meta_parts.append("📀 Plex Private")
+                meta_parts.append("📀 Plex")
             streaming_label = label_string(await self.bot.watchmode.get_sources(movie))
             if streaming_label:
                 meta_parts.append(streaming_label)

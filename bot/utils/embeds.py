@@ -63,7 +63,7 @@ def movie_card(
         if rating and rating != "N/A":
             meta_parts.append(f"⭐ {rating}/10")
         if on_plex:
-            meta_parts.append("📀 Plex Private")
+            meta_parts.append("📀 Plex")
         streaming_label = label_string(watchmode_sources)
         if streaming_label:
             meta_parts.append(streaming_label)
@@ -72,7 +72,7 @@ def movie_card(
     else:
         info_parts = []
         if on_plex:
-            info_parts.append("📀 Plex Private")
+            info_parts.append("📀 Plex")
         streaming_label = label_string(watchmode_sources)
         if streaming_label:
             info_parts.append(streaming_label)
@@ -372,7 +372,7 @@ def schedule_embeds(
         date_str = format_dt_eastern(e.scheduled_for)
         line = f"**{name}** — {date_str}"
         if plex_availability and e.movie_id in plex_availability and plex_availability[e.movie_id]:
-            line += " 📀 Plex Private"
+            line += " 📀 Plex"
         if watchmode and e.movie_id in watchmode:
             streaming_label = label_string(watchmode[e.movie_id])
             if streaming_label:

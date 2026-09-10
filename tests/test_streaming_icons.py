@@ -1,8 +1,10 @@
 """Coverage for the Watchmode source-name -> icon mapping Brandon picked:
-📀 Plex Private (self-hosted, handled separately by PlexClient) plus
-🟣 Tubi / ▶️ YouTube / 🪐 Pluto / 📚 Hoopla / 🟥 Netflix / 🟢 Hulu / ⬛ HBO
-from Watchmode sources. (💿 Plex Free was tried and removed — Watchmode's
-"Plex" source didn't reliably mean free-to-stream in practice.)
+📀 Plex (self-hosted, handled separately by PlexClient) plus
+🟣 Tubi / 🪐 Pluto / 📚 Hoopla / 🟥 Netflix / 🟢 Hulu / ⬛ HBO from
+Watchmode sources. (💿 Plex Free was tried and removed — Watchmode's "Plex"
+source didn't reliably mean free-to-stream in practice. ▶️ YouTube was also
+removed — Watchmode's "free" YouTube listings turned out to be straight
+rentals.)
 """
 from __future__ import annotations
 
@@ -22,7 +24,6 @@ def test_no_sources_returns_nothing():
 
 def test_exact_name_matches():
     assert icons_for_sources([_source("Tubi TV")]) == [("🟣", "Tubi")]
-    assert icons_for_sources([_source("YouTube")]) == [("▶️", "YouTube")]
     assert icons_for_sources([_source("Pluto TV")]) == [("🪐", "Pluto")]
     assert icons_for_sources([_source("Hoopla")]) == [("📚", "Hoopla")]
     assert icons_for_sources([_source("Netflix", "sub")]) == [("🟥", "Netflix")]
@@ -36,6 +37,12 @@ def test_plex_source_is_not_mapped_to_an_icon():
     """💿 Plex Free was tried and removed as inaccurate — a "Plex" source
     from Watchmode should not produce any icon."""
     assert icons_for_sources([_source("Plex")]) == []
+
+
+def test_youtube_is_not_mapped_to_an_icon():
+    """▶️ YouTube was tried and removed — Watchmode's "free" YouTube
+    listings turned out to be straight rentals."""
+    assert icons_for_sources([_source("YouTube")]) == []
 
 
 def test_hulu_bundle_variant_matches():
@@ -61,19 +68,19 @@ def test_multiple_sources_dedupe_and_keep_priority_order():
 
 
 def test_icon_string_is_compact():
-    sources = [_source("Tubi TV"), _source("YouTube")]
-    assert icon_string(sources) == " 🟣 ▶️"
+    sources = [_source("Tubi TV"), _source("Pluto TV")]
+    assert icon_string(sources) == " 🟣 🪐"
 
 
 def test_label_string_includes_names():
-    sources = [_source("Tubi TV"), _source("YouTube")]
-    assert label_string(sources) == "🟣 Tubi · ▶️ YouTube"
+    sources = [_source("Tubi TV"), _source("Pluto TV")]
+    assert label_string(sources) == "🟣 Tubi · 🪐 Pluto"
 
 
-def test_legend_text_lists_every_icon_starting_with_plex_private():
+def test_legend_text_lists_every_icon_starting_with_plex():
     legend = legend_text()
     assert legend == (
-        "📀 Plex Private · 🟣 Tubi · ▶️ YouTube · 🪐 Pluto · 📚 Hoopla · "
-        "🟥 Netflix · 🟢 Hulu · ⬛ HBO"
+        "📀 Plex · 🟣 Tubi · 🪐 Pluto · 📚 Hoopla · 🟥 Netflix · 🟢 Hulu · ⬛ HBO"
     )
     assert "Plex Free" not in legend
+    assert "YouTube" not in legend
