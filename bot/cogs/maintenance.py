@@ -13,6 +13,7 @@ from bot.models.movie import Movie, MovieStatus
 from bot.utils.apple_tv import find_apple_tv_url, resolve_event_image
 from bot.utils.genres import build_role_mention_string
 from bot.utils.embeds import SCHEDULE_COLOR, build_coming_up_description, stash_list_embeds
+from bot.utils.streaming_icons import icon_string, label_string
 from bot.utils.refresh_state import (
     fingerprint_embeds,
     load_fingerprint,
@@ -598,8 +599,11 @@ class MaintenanceCog(commands.Cog, name="Maintenance"):
             return
 
         plex_availability = await self.bot.plex.check_movies(movies)
+        watchmode = await self.bot.watchmode.check_movies(movies)
 
-        embeds = stash_list_embeds(movies, status_label="Stash", plex_availability=plex_availability)
+        embeds = stash_list_embeds(
+            movies, status_label="Stash", plex_availability=plex_availability, watchmode=watchmode
+        )
         fingerprint = fingerprint_embeds(embeds)
 
         try:
@@ -710,7 +714,10 @@ class MaintenanceCog(commands.Cog, name="Maintenance"):
 
             on_plex = await self.bot.plex.check_movie(movie.title)
             if on_plex:
-                meta_parts.append("📀 On Plex")
+                meta_parts.append("📀 Plex Private")
+            streaming_label = label_string(await self.bot.watchmode.get_sources(movie))
+            if streaming_label:
+                meta_parts.append(streaming_label)
 
             movie_embed = discord.Embed(
                 title=movie.display_title,
@@ -730,6 +737,7 @@ class MaintenanceCog(commands.Cog, name="Maintenance"):
             if m:
                 upcoming_movies.append((e, m))
         plex_availability = await self.bot.plex.check_movies([m for _, m in upcoming_movies])
+        watchmode = await self.bot.watchmode.check_movies([m for _, m in upcoming_movies])
 
         lines = []
         for e, m in upcoming_movies:
@@ -744,7 +752,8 @@ class MaintenanceCog(commands.Cog, name="Maintenance"):
             plex_str = ""
             if plex_availability.get(m.id):
                 plex_str = " 📀"
-            lines.append(f"🎬 {date_label} — **{m.display_title}**{rating_str}{plex_str}")
+            streaming_str = icon_string(watchmode.get(m.id))
+            lines.append(f"🎬 {date_label} — **{m.display_title}**{rating_str}{plex_str}{streaming_str}")
 
         if lines:
             schedule_embed = discord.Embed(

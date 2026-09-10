@@ -37,7 +37,10 @@ def _cog_and_storage():
     storage.get_movie.return_value = movie
     storage.add_schedule_entry.return_value = SimpleNamespace(id=10)
     maintenance = SimpleNamespace(post_schedule_announcement=AsyncMock())
-    bot = SimpleNamespace(storage=storage, config=SimpleNamespace(), get_cog=lambda name: maintenance)
+    watchmode = SimpleNamespace(get_sources=AsyncMock(return_value=[]))
+    bot = SimpleNamespace(
+        storage=storage, config=SimpleNamespace(), get_cog=lambda name: maintenance, watchmode=watchmode
+    )
     cog = ScheduleCog(bot)
     return cog, storage
 

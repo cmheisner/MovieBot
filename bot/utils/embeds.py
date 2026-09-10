@@ -8,6 +8,7 @@ import discord
 from bot.constants import TZ_EASTERN
 from bot.models.movie import Movie
 from bot.models.schedule_entry import ScheduleEntry
+from bot.utils.streaming_icons import icon_string, label_string
 from bot.utils.time_utils import format_dt_eastern
 
 
@@ -25,7 +26,13 @@ _STATUS_LABELS = {
 }
 
 
-def movie_card(movie: Movie, *, title_prefix: str = "", on_plex: bool = False) -> discord.Embed:
+def movie_card(
+    movie: Movie,
+    *,
+    title_prefix: str = "",
+    on_plex: bool = False,
+    watchmode_sources: list[dict] | None = None,
+) -> discord.Embed:
     embed = discord.Embed(
         title=f"{title_prefix}{movie.display_title}",
         color=STASH_COLOR,
@@ -56,21 +63,32 @@ def movie_card(movie: Movie, *, title_prefix: str = "", on_plex: bool = False) -
         if rating and rating != "N/A":
             meta_parts.append(f"⭐ {rating}/10")
         if on_plex:
-            meta_parts.append("📀 On Plex")
+            meta_parts.append("📀 Plex Private")
+        streaming_label = label_string(watchmode_sources)
+        if streaming_label:
+            meta_parts.append(streaming_label)
         if meta_parts:
             embed.add_field(name="Info", value=" · ".join(meta_parts), inline=False)
-    elif on_plex:
-        embed.add_field(name="Info", value="📀 On Plex", inline=False)
+    else:
+        info_parts = []
+        if on_plex:
+            info_parts.append("📀 Plex Private")
+        streaming_label = label_string(watchmode_sources)
+        if streaming_label:
+            info_parts.append(streaming_label)
+        if info_parts:
+            embed.add_field(name="Info", value=" · ".join(info_parts), inline=False)
     if movie.poster_url:
         embed.set_thumbnail(url=movie.poster_url)
     embed.set_footer(text=f"Added by {movie.added_by} · id={movie.id}")
     return embed
 
 
-def _movie_line(m: Movie, *, on_plex: bool = False, watch_date=None) -> str:
+def _movie_line(m: Movie, *, on_plex: bool = False, watchmode_sources: list[dict] | None = None, watch_date=None) -> str:
     line = f"`{m.id}` **{m.display_title}**"
     if on_plex:
         line += " 📀"
+    line += icon_string(watchmode_sources)
     if watch_date:
         line += f" — {format_dt_eastern(watch_date)}"
     elif m.notes:
@@ -163,11 +181,13 @@ def _build_stash_sections(
     movies: list[Movie],
     plex_availability: dict[int, bool] | None,
     watch_dates: dict | None,
+    watchmode: dict[int, list[dict]] | None = None,
 ) -> list[tuple[Optional[str], list[str]]]:
     def _line(m: Movie) -> str:
         return _movie_line(
             m,
             on_plex=bool(plex_availability and plex_availability.get(m.id)),
+            watchmode_sources=watchmode.get(m.id) if watchmode else None,
             watch_date=watch_dates.get(m.id) if watch_dates else None,
         )
 
@@ -197,6 +217,7 @@ def stash_list_embeds(
     status_label: str = "stash",
     plex_availability: dict[int, bool] | None = None,
     watch_dates: dict | None = None,
+    watchmode: dict[int, list[dict]] | None = None,
 ) -> list[discord.Embed]:
     """Render the stash list as one or more embeds, splitting long lists to
     stay under Discord's 4096-char embed description cap."""
@@ -208,7 +229,7 @@ def stash_list_embeds(
         embed.description = "_No movies found._"
         return [embed]
 
-    sections = _build_stash_sections(movies, plex_availability, watch_dates)
+    sections = _build_stash_sections(movies, plex_availability, watch_dates, watchmode)
     descriptions = _chunk_sections_into_descriptions(sections)
 
     embeds = [
@@ -225,6 +246,7 @@ def build_calendar_content(
     entries: list,
     movies_by_id: dict,
     plex_availability: dict[int, bool] | None = None,
+    watchmode: dict[int, list[dict]] | None = None,
 ) -> tuple[str, str]:
     """Return (ansi_code_block, legend_text) for the given month.
 
@@ -282,7 +304,8 @@ def build_calendar_content(
                 plex_str = ""
                 if plex_availability and m and plex_availability.get(m.id):
                     plex_str = " 📀"
-                legend_lines.append(f"🎬 {date_str} — **{title}**{rating}{plex_str}")
+                streaming_str = icon_string(watchmode.get(m.id)) if watchmode and m else ""
+                legend_lines.append(f"🎬 {date_str} — **{title}**{rating}{plex_str}{streaming_str}")
         legend = "\n".join(legend_lines)
     else:
         legend = "_No movies scheduled this month._"
@@ -296,9 +319,10 @@ def build_calendar_embed(
     entries: list,
     movies_by_id: dict,
     plex_availability: dict[int, bool] | None = None,
+    watchmode: dict[int, list[dict]] | None = None,
 ) -> discord.Embed:
     """Build an ANSI calendar embed for the given month."""
-    code_block, legend = build_calendar_content(year, month, entries, movies_by_id, plex_availability)
+    code_block, legend = build_calendar_content(year, month, entries, movies_by_id, plex_availability, watchmode)
     month_name = _calendar.month_name[month]
     embed = discord.Embed(
         title=f"📅 {month_name} {year}",
@@ -332,6 +356,7 @@ def schedule_embeds(
     entries: list[ScheduleEntry],
     movies: dict[int, Movie],
     plex_availability: dict[int, bool] | None = None,
+    watchmode: dict[int, list[dict]] | None = None,
 ) -> list[discord.Embed]:
     """Render the schedule list as one or more embeds."""
     title = "🗓️ Movie Night Schedule"
@@ -347,7 +372,11 @@ def schedule_embeds(
         date_str = format_dt_eastern(e.scheduled_for)
         line = f"**{name}** — {date_str}"
         if plex_availability and e.movie_id in plex_availability and plex_availability[e.movie_id]:
-            line += " 📀 On Plex"
+            line += " 📀 Plex Private"
+        if watchmode and e.movie_id in watchmode:
+            streaming_label = label_string(watchmode[e.movie_id])
+            if streaming_label:
+                line += f" · {streaming_label}"
         lines.append(line)
 
     descriptions = _chunk_sections_into_descriptions([(None, lines)])

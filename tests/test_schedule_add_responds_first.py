@@ -42,7 +42,8 @@ def test_schedule_add_replies_before_announcement_finishes():
             await block_forever.wait()
 
         maintenance = SimpleNamespace(post_schedule_announcement=hanging_announcement)
-        bot = SimpleNamespace(storage=storage, get_cog=lambda name: maintenance)
+        watchmode = SimpleNamespace(get_sources=AsyncMock(return_value=[]))
+        bot = SimpleNamespace(storage=storage, get_cog=lambda name: maintenance, watchmode=watchmode)
         cog = ScheduleCog(bot)
         interaction = AsyncMock()
 

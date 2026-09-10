@@ -215,7 +215,10 @@ class StashCog(commands.Cog, name="Stash"):
         await interaction.response.defer(ephemeral=True)
         movies = await self.bot.storage.list_movies(status=MovieStatus.STASH)
         plex_availability = await self.bot.plex.check_movies(movies)
-        embeds = stash_list_embeds(movies, status_label="Stash", plex_availability=plex_availability)
+        watchmode = await self.bot.watchmode.check_movies(movies)
+        embeds = stash_list_embeds(
+            movies, status_label="Stash", plex_availability=plex_availability, watchmode=watchmode
+        )
         await send_embeds_paginated(interaction, embeds, ephemeral=True)
 
     # ── /stash search ─────────────────────────────────────────────────────
@@ -228,7 +231,8 @@ class StashCog(commands.Cog, name="Stash"):
         if not m:
             return
         on_plex = await self.bot.plex.check_movie(m.title)
-        embed = movie_card(m, on_plex=on_plex)
+        watchmode_sources = await self.bot.watchmode.get_sources(m)
+        embed = movie_card(m, on_plex=on_plex, watchmode_sources=watchmode_sources)
         await interaction.followup.send(embed=embed, ephemeral=True)
 
     @stash_search.autocomplete("movie")

@@ -9,6 +9,7 @@ from discord.ext import commands
 from bot.config import BotConfig
 from bot.providers.media.omdb import OMDBMetadataProvider, NoOpMetadataProvider
 from bot.providers.media.plex import PlexClient, NoOpPlexClient
+from bot.providers.media.watchmode import WatchmodeClient, NoOpWatchmodeClient
 from bot.providers.storage.sqlite import SQLiteStorageProvider
 from bot.utils import strings
 from bot.utils.permissions import user_has_staff_role
@@ -119,6 +120,11 @@ class MovieBotClient(commands.Bot):
             PlexClient(config.plex_url, config.plex_token, config.plex_library_section_id)
             if config.plex_url and config.plex_token
             else NoOpPlexClient()
+        )
+        self.watchmode = (
+            WatchmodeClient(config.watchmode_api_key)
+            if config.watchmode_api_key
+            else NoOpWatchmodeClient()
         )
         self.pending_restart: bool = False
         self._startup_notified: bool = False

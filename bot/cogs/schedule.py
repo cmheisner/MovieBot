@@ -354,7 +354,8 @@ class ScheduleCog(commands.Cog, name="Schedule"):
             if m:
                 movies_by_id[e.movie_id] = m
         plex_availability = await self.bot.plex.check_movies(list(movies_by_id.values()))
-        embeds = schedule_embeds(entries, movies_by_id, plex_availability)
+        watchmode = await self.bot.watchmode.check_movies(list(movies_by_id.values()))
+        embeds = schedule_embeds(entries, movies_by_id, plex_availability, watchmode)
         await send_embeds_paginated(interaction, embeds, ephemeral=True)
 
     # ── /schedule add ─────────────────────────────────────────────────────
@@ -424,6 +425,10 @@ class ScheduleCog(commands.Cog, name="Schedule"):
                 maintenance.post_schedule_announcement(m, scheduled_for),
                 label=f"schedule-add announcement: {m.display_title}",
             )
+        self._run_in_background(
+            self.bot.watchmode.get_sources(m),
+            label=f"schedule-add watchmode check: {m.display_title}",
+        )
 
     @schedule_add.autocomplete("movie")
     async def _schedule_add_autocomplete(
@@ -662,7 +667,8 @@ class ScheduleCog(commands.Cog, name="Schedule"):
                 movies_by_id[e.movie_id] = m
 
         plex_availability = await self.bot.plex.check_movies(list(movies_by_id.values()))
-        embed = build_calendar_embed(year, month, month_entries, movies_by_id, plex_availability)
+        watchmode = await self.bot.watchmode.check_movies(list(movies_by_id.values()))
+        embed = build_calendar_embed(year, month, month_entries, movies_by_id, plex_availability, watchmode)
         await interaction.followup.send(embed=embed)
 
     # ── /schedule refresh ──────────────────────────────────────────────────

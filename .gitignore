@@ -67,6 +67,7 @@ data/*.db-wal
 data/*.db-shm
 data/*.log
 data/*.log.*
+data/watchmode_cache.json
 credentials.json
 
 # Flask stuff:
